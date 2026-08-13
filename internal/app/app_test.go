@@ -297,13 +297,19 @@ func TestCopyableServerFilesShowEveryDeploymentMaterial(t *testing.T) {
 
 	got := out.String()
 	for _, want := range []string{
-		"包含私钥", "server.cert.pem", "server.key.pem", "server.fullchain.pem",
-		"intermediate-ca.pem", "complete-chain.pem", "root-ca.pem",
+		"包含私钥", "[1] 私钥（敏感）", "server.key.pem",
+		"[2] 部署用完整链", "server.fullchain.pem",
+		"[3] 根 CA 证书（信任锚）", "root-ca.pem",
 		"客户端安装证书 CA", "Nginx ssl_certificate", "0600",
-		"SERVER", "SECRET", "SERVER-FULLCHAIN", "INTERMEDIATE-CA", "COMPLETE-CHAIN", "ROOT-CA",
+		"SECRET", "SERVER-FULLCHAIN", "ROOT-CA",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("可复制部署文件缺少 %q：\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"server.cert.pem", "intermediate-ca.pem", "complete-chain.pem", "[4]", "[5]", "[6]"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("精简后的可复制部署文件不应包含 %q：\n%s", unwanted, got)
 		}
 	}
 }
@@ -326,7 +332,7 @@ func TestCopyableCSRFilesExplainMissingPrivateKey(t *testing.T) {
 	}
 
 	got := out.String()
-	for _, want := range []string{"client.cert.pem", "client.key.pem", "私钥未显示", "外部 CSR", "mTLS 服务器信任的根 CA"} {
+	for _, want := range []string{"client.key.pem", "client.fullchain.pem", "私钥未显示", "外部 CSR", "mTLS 服务器信任的根 CA"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("CSR 可复制文件说明缺少 %q：\n%s", want, got)
 		}

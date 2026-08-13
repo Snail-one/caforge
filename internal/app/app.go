@@ -593,7 +593,7 @@ func (a *App) certificateActions(ca, serial string) error {
 		a.ui.MenuOptionHint("2", "续期", "生成新密钥，保留旧证书")
 		a.ui.MenuOptionHint("3", "导出 PEM", "证书、私钥和完整链")
 		a.ui.MenuOptionHint("4", "导出 PKCS#12", "带口令的完整证书链")
-		a.ui.MenuOptionHint("5", "查看并复制部署文件", "显示证书、私钥、fullchain 和客户端安装的根 CA")
+		a.ui.MenuOptionHint("5", "查看并复制部署文件", "仅显示私钥、部署用完整链和根 CA")
 		switch meta.Profile {
 		case domain.Server:
 			a.ui.MenuOptionHint("6", "查看服务器部署说明", "服务器所需文件、fullchain 顺序和客户端信任关系")
@@ -669,61 +669,42 @@ func (a *App) showCopyableCertificateFiles(ca, serial string, meta domain.Certif
 		return errCancelled
 	}
 
-	identityName, keyName := "certificate.cert.pem", "certificate.key.pem"
-	identityTitle, identityPurpose := "身份认证证书", "提供给使用该身份的程序，与对应私钥配套使用"
+	keyName := "certificate.key.pem"
 	fullChainName, fullChainPurpose := "certificate.fullchain.pem", "当前证书 + 中间 CA，不含根 CA"
 	switch meta.Profile {
 	case domain.Server:
-		identityName, keyName = "server.cert.pem", "server.key.pem"
-		identityTitle = "服务器证书"
-		identityPurpose = "部署到服务器，证明服务器身份；必须与 server.key.pem 配套"
+		keyName = "server.key.pem"
 		fullChainName = "server.fullchain.pem"
 		fullChainPurpose = "服务器证书 + 中间 CA，不含根 CA；用于 Nginx ssl_certificate 等完整链配置"
 	case domain.Client:
-		identityName, keyName = "client.cert.pem", "client.key.pem"
-		identityTitle = "客户端证书"
-		identityPurpose = "部署到 mTLS 客户端，证明客户端身份；必须与 client.key.pem 配套"
+		keyName = "client.key.pem"
 		fullChainName = "client.fullchain.pem"
 		fullChainPurpose = "客户端证书 + 中间 CA，不含根 CA；供要求发送客户端完整链的程序使用"
 	case domain.Intermediate:
-		identityName, keyName = "intermediate-ca.cert.pem", "intermediate-ca.key.pem"
-		identityTitle = "中间 CA 证书"
-		identityPurpose = "公开的中间 CA 证书，用于构建从终端证书到根 CA 的信任链"
+		keyName = "intermediate-ca.key.pem"
 		fullChainName = "intermediate-ca.chain.pem"
 		fullChainPurpose = "中间 CA 链，不含根 CA；供需要中间证书链的程序使用"
 	}
-
-	a.printCopyablePEM("[1] "+identityTitle, identityName, identityPurpose, materials.CertificatePEM)
 
 	if len(materials.PrivateKeyPEM) > 0 && meta.Profile != domain.Intermediate {
 		keyState := "明文私钥"
 		if materials.PrivateKeyEncrypted {
 			keyState = "口令加密私钥"
 		}
-		a.printCopyablePEM("[2] 私钥（敏感）", keyName, keyState+"；只部署到对应服务器、客户端或服务，文件权限应为 0600", materials.PrivateKeyPEM)
+		a.printCopyablePEM("[1] 私钥（敏感）", keyName, keyState+"；只部署到对应服务器、客户端或服务，文件权限应为 0600", materials.PrivateKeyPEM)
 	} else {
 		detail := "该证书由外部 CSR 签发；CAForge 没有私钥。请从生成 CSR 的服务器或客户端取得原始私钥，证书必须与它配套使用。"
 		if meta.Profile == domain.Intermediate {
 			detail = "CA 私钥不会在证书管理界面显示。请只在 CAForge 的受控 CA 数据目录中使用和保护它。"
 		}
 		a.ui.Printf("\n")
-		a.ui.PrintWarningCard("[2] 私钥未显示",
+		a.ui.PrintWarningCard("[1] 私钥未显示",
 			ui.CardField{Label: "建议文件名", Value: keyName},
 			ui.CardField{Label: "说明", Value: detail},
 		)
 	}
 
-	a.printCopyablePEM("[3] 部署用完整链", fullChainName, fullChainPurpose, materials.FullChainPEM)
-	if len(materials.IntermediateChainPEM) > 0 {
-		a.printCopyablePEM("[4] 中间 CA 证书链", "intermediate-ca.pem", "公开证书；服务器随身份认证证书发送，客户端通常不单独安装为信任锚", materials.IntermediateChainPEM)
-	} else {
-		a.ui.Printf("\n")
-		a.ui.PrintInfoCard("[4] 中间 CA 证书链",
-			ui.CardField{Label: "状态", Value: "无"},
-			ui.CardField{Label: "说明", Value: "当前证书由根 CA 直接签发，因此没有中间 CA 文件"},
-		)
-	}
-	a.printCopyablePEM("[5] 完整公开信任链", "complete-chain.pem", "当前证书 → 中间 CA → 根 CA；适合检查、归档或传输，通常不直接用于服务器 ssl_certificate", materials.CompleteChainPEM)
+	a.printCopyablePEM("[2] 部署用完整链", fullChainName, fullChainPurpose, materials.FullChainPEM)
 
 	rootPurpose := "客户端安装证书 CA：复制到访问服务器的客户端，并导入系统或应用信任库"
 	if meta.Profile == domain.Client {
@@ -731,7 +712,7 @@ func (a *App) showCopyableCertificateFiles(ca, serial string, meta domain.Certif
 	} else if meta.Profile == domain.Intermediate {
 		rootPurpose = "根 CA 信任锚：导入信任库后，可验证该中间 CA 签发的终端证书"
 	}
-	a.printCopyablePEM("[6] 根 CA 证书（信任锚）", "root-ca.pem", rootPurpose, materials.RootCAPEM)
+	a.printCopyablePEM("[3] 根 CA 证书（信任锚）", "root-ca.pem", rootPurpose, materials.RootCAPEM)
 
 	a.ui.Printf("\n")
 	a.ui.PrintWarningCard("复制后的文件权限",
