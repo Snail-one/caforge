@@ -2,7 +2,6 @@ package app
 
 import (
 	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -52,7 +51,6 @@ type CertificateService interface {
 	Get(string, string) (domain.Certificate, *x509.Certificate, byte, error)
 	Renew(string, string, int, []byte, []byte, bool) (domain.Certificate, error)
 	Export(string, string, domain.ExportFormat, []byte, []byte) ([]byte, error)
-	CertificateChain(string, string) ([]byte, error)
 	FilePaths(string, string) (certificate.FilePaths, error)
 	DeploymentMaterials(string, string) (certificate.DeploymentMaterials, error)
 }
@@ -693,18 +691,17 @@ func (a *App) certificateActions(ca, serial string) error {
 		}
 		a.ui.PrintInfoCard("证书详情", fields...)
 		a.ui.Printf("\n")
-		a.ui.MenuOptionHint("1", "查看证书链", "按终端证书 → 中间 CA → 根 CA 展示，不含私钥")
+		a.ui.MenuOptionHint("1", "查看证书", "显示私钥、部署用完整链和根 CA")
 		a.ui.MenuOptionHint("2", "续期", "生成新密钥，保留旧证书")
 		a.ui.MenuOptionHint("3", "导出 PEM", "证书、私钥和完整链")
 		a.ui.MenuOptionHint("4", "导出 PKCS#12", "带口令的完整证书链")
-		a.ui.MenuOptionHint("5", "查看并复制部署文件", "仅显示私钥、部署用完整链和根 CA")
 		switch meta.Profile {
 		case domain.Server:
-			a.ui.MenuOptionHint("6", "查看服务器部署说明", "服务器所需文件、fullchain 顺序和客户端信任关系")
+			a.ui.MenuOptionHint("5", "部署说明", "服务器所需文件、fullchain 顺序和客户端信任关系")
 		case domain.Client:
-			a.ui.MenuOptionHint("6", "查看客户端使用说明", "mTLS 客户端导入和服务器信任配置")
+			a.ui.MenuOptionHint("5", "查看客户端使用说明", "mTLS 客户端导入和服务器信任配置")
 		default:
-			a.ui.MenuOptionHint("6", "查看中间 CA 使用说明", "签发链、根 CA 信任关系和私钥保护")
+			a.ui.MenuOptionHint("5", "查看中间 CA 使用说明", "签发链、根 CA 信任关系和私钥保护")
 		}
 		a.ui.MenuExit("0/q", "返回")
 		a.ui.Printf("\n")
@@ -714,10 +711,7 @@ func (a *App) certificateActions(ca, serial string) error {
 		}
 		switch strings.ToLower(v) {
 		case "1":
-			chain, e := a.certificates.CertificateChain(ca, serial)
-			if e == nil {
-				e = a.showCertificateChain(chain)
-			}
+			e = a.showCopyableCertificateFiles(ca, serial, meta)
 			if e == nil {
 				a.ui.Pause()
 			}
@@ -728,11 +722,6 @@ func (a *App) certificateActions(ca, serial string) error {
 		case "4":
 			e = a.exportCertificate(ca, serial, domain.ExportPKCS12)
 		case "5":
-			e = a.showCopyableCertificateFiles(ca, serial, meta)
-			if e == nil {
-				a.ui.Pause()
-			}
-		case "6":
 			a.showCertificateUsage(meta)
 			a.ui.Pause()
 		case "0", "q", "exit":
@@ -754,7 +743,7 @@ func (a *App) showCopyableCertificateFiles(ca, serial string, meta domain.Certif
 		return err
 	}
 
-	a.ui.Printf("\n")
+	a.ui.Header("主菜单 / 证书管理 / " + serial + " / 查看证书")
 	warningFields := []ui.CardField{
 		{Label: "终端记录", Value: "以下 PEM 内容会保留在终端滚动记录中"},
 		{Label: "操作环境", Value: "仅在自己的受控终端查看；不要粘贴到聊天、工单或公开日志"},
@@ -764,7 +753,7 @@ func (a *App) showCopyableCertificateFiles(ca, serial string, meta domain.Certif
 	} else {
 		warningFields = append(warningFields, ui.CardField{Label: "私钥", Value: "此记录不保存私钥，只显示公开证书"})
 	}
-	a.ui.PrintDangerCard("显示可复制部署文件前请确认", warningFields...)
+	a.ui.PrintDangerCard("显示证书内容前请确认", warningFields...)
 	ok, err := a.ui.Confirm("确认在终端显示这些内容？")
 	if err != nil {
 		return err
@@ -884,65 +873,6 @@ func (a *App) showCertificateUsage(certificate domain.Certificate) {
 	}
 }
 
-func (a *App) showCertificateChain(chain []byte) error {
-	type chainItem struct {
-		certificate *x509.Certificate
-		pem         []byte
-	}
-	var items []chainItem
-	rest := chain
-	for len(strings.TrimSpace(string(rest))) > 0 {
-		block, remaining := pem.Decode(rest)
-		if block == nil {
-			return errors.New("证书链包含无法解析的 PEM 数据")
-		}
-		rest = remaining
-		if block.Type != "CERTIFICATE" {
-			return fmt.Errorf("证书链包含非证书 PEM 块 %q", block.Type)
-		}
-		certificate, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return fmt.Errorf("解析证书链失败: %w", err)
-		}
-		items = append(items, chainItem{certificate: certificate, pem: pem.EncodeToMemory(block)})
-	}
-	if len(items) == 0 {
-		return errors.New("证书链为空")
-	}
-
-	a.ui.Printf("\n")
-	a.ui.PrintInfoCard("证书链说明",
-		ui.CardField{Label: "顺序", Value: "终端证书 → 中间 CA → 根 CA"},
-		ui.CardField{Label: "验证", Value: "每一项由下一项签发，最后由受信任的根 CA 建立信任"},
-		ui.CardField{Label: "安全", Value: a.ui.LabelBadge("仅公开证书，不含私钥", true)},
-	)
-
-	for index, item := range items {
-		role, purpose := certificateRole(item.certificate, index, len(items))
-		a.ui.Printf("\n")
-		a.ui.MenuSection(fmt.Sprintf("[%d/%d] %s", index+1, len(items), role))
-		a.ui.PrintInfoCard(item.certificate.Subject.CommonName,
-			ui.CardField{Label: "角色", Value: role},
-			ui.CardField{Label: "用途", Value: purpose},
-			ui.CardField{Label: "主题", Value: item.certificate.Subject.String()},
-			ui.CardField{Label: "签发者", Value: item.certificate.Issuer.String()},
-			ui.CardField{Label: "序列号", Value: strings.ToUpper(item.certificate.SerialNumber.Text(16))},
-			ui.CardField{Label: "有效期", Value: item.certificate.NotBefore.Local().Format(time.RFC3339) + " — " + item.certificate.NotAfter.Local().Format(time.RFC3339)},
-		)
-		a.ui.Printf("\n%s", item.pem)
-	}
-	return nil
-}
-
-func certificateRole(certificate *x509.Certificate, index, total int) (string, string) {
-	if !certificate.IsCA {
-		return "终端证书", "提供给服务器或客户端使用，由上级 CA 验证身份"
-	}
-	if index == total-1 && certificate.Subject.String() == certificate.Issuer.String() && certificate.CheckSignatureFrom(certificate) == nil {
-		return "根 CA 证书（信任锚）", "安装到客户端或系统信任库，用于建立整条证书链的最终信任"
-	}
-	return "中间 CA 证书", "隔离根 CA 与日常签发操作，用于验证下一级证书"
-}
 func (a *App) renew(ca, serial string) error {
 	days, e := a.days("新证书有效天数 [397]: ", 397)
 	if e != nil {

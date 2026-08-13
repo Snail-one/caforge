@@ -2,12 +2,7 @@ package app
 
 import (
 	"bytes"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
 	"errors"
 	"math/big"
 	"os"
@@ -85,7 +80,6 @@ func (s exportCertificateService) Renew(string, string, int, []byte, []byte, boo
 func (s exportCertificateService) Export(string, string, domain.ExportFormat, []byte, []byte) ([]byte, error) {
 	return s.data, nil
 }
-func (s exportCertificateService) CertificateChain(string, string) ([]byte, error) { return nil, nil }
 func (s exportCertificateService) FilePaths(string, string) (certificate.FilePaths, error) {
 	return s.paths, nil
 }
@@ -126,6 +120,16 @@ func TestCertificateDetailsDisplayAbsoluteFilePaths(t *testing.T) {
 	} {
 		if !strings.Contains(got, label+"："+path) {
 			t.Fatalf("证书详情缺少 %s 的绝对路径 %q：\n%s", label, path, got)
+		}
+	}
+	for _, want := range []string{"查看证书", "显示私钥、部署用完整链和根 CA", "部署说明"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("证书操作菜单缺少 %q：\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"查看证书链", "查看并复制部署文件"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("证书操作菜单仍包含旧选项 %q：\n%s", unwanted, got)
 		}
 	}
 }
@@ -340,64 +344,6 @@ func TestPKCS12ExportDisplaysAbsolutePath(t *testing.T) {
 	}
 	if data, readErr := os.ReadFile(want); readErr != nil || string(data) != "pkcs12" {
 		t.Fatalf("PKCS#12 导出文件错误：data=%q err=%v", data, readErr)
-	}
-}
-
-func TestCertificateChainDisplayExplainsRolesAndContainsNoKey(t *testing.T) {
-	now := time.Now().UTC()
-	rootKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rootTemplate := &x509.Certificate{
-		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Test Root"},
-		NotBefore: now.Add(-time.Hour), NotAfter: now.AddDate(10, 0, 0),
-		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
-	}
-	rootDER, err := x509.CreateCertificate(rand.Reader, rootTemplate, rootTemplate, &rootKey.PublicKey, rootKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rootCertificate, err := x509.ParseCertificate(rootDER)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leafTemplate := &x509.Certificate{
-		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "server.test"},
-		NotBefore: now.Add(-time.Hour), NotAfter: now.AddDate(1, 0, 0),
-		BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature,
-	}
-	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, rootCertificate, &leafKey.PublicKey, rootKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	chain := append(
-		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}),
-		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootDER})...,
-	)
-
-	var out bytes.Buffer
-	a := &App{ui: ui.New(strings.NewReader(""), &out, false, nil)}
-	if err = a.showCertificateChain(chain); err != nil {
-		t.Fatal(err)
-	}
-	got := out.String()
-	for _, want := range []string{
-		"终端证书 → 中间 CA → 根 CA", "[1/2] 终端证书",
-		"[2/2] 根 CA 证书（信任锚）", "安装到客户端或系统信任库",
-		"仅公开证书，不含私钥", "server.test", "Test Root",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("证书链显示缺少 %q：\n%s", want, got)
-		}
-	}
-	if strings.Contains(got, "PRIVATE KEY") {
-		t.Fatalf("证书链显示包含私钥：\n%s", got)
 	}
 }
 

@@ -223,11 +223,6 @@ func (s *Service) Get(caID, serial string) (domain.Certificate, *x509.Certificat
 	return c, parsed, status, nil
 }
 
-func (s *Service) CertificateChain(caID, serial string) ([]byte, error) {
-	_, _, _, chain, err := s.repo.LoadCertificate(caID, serial)
-	return chain, err
-}
-
 func (s *Service) FilePaths(caID, serial string) (FilePaths, error) {
 	var paths FilePaths
 	meta, _, _, _, err := s.repo.LoadCertificate(caID, serial)
