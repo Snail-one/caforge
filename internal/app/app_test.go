@@ -46,7 +46,7 @@ func TestScriptedMenuCreatesRootAndExits(t *testing.T) {
 	if !strings.Contains(out.String(), "版本 v9.8.7") {
 		t.Fatalf("主菜单缺少版本徽标：\n%s", out.String())
 	}
-	for _, want := range []string{"创建、查看和选择签发机构", "生成密钥签发或导入 CSR", "查询、续期和导出证书", "永久吊销证书并管理 CRL"} {
+	for _, want := range []string{"创建、查看和选择签发机构", "生成密钥签发或导入 CSR", "查询、续期和导出证书", "查看或重新生成证书吊销列表"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("主菜单缺少用途说明 %q：\n%s", want, out.String())
 		}
@@ -62,6 +62,25 @@ type exportCertificateService struct {
 	meta      domain.Certificate
 	parsed    *x509.Certificate
 	paths     certificate.FilePaths
+}
+
+type captureRevocationService struct {
+	calls  int
+	ca     string
+	serial string
+	reason domain.RevocationReason
+}
+
+func (s *captureRevocationService) Revoke(ca, serial string, reason domain.RevocationReason, _ []byte) error {
+	s.calls++
+	s.ca = ca
+	s.serial = serial
+	s.reason = reason
+	return nil
+}
+func (s *captureRevocationService) Generate(string, []byte) error { return nil }
+func (s *captureRevocationService) Read(string) (*x509.RevocationList, error) {
+	return &x509.RevocationList{}, nil
 }
 
 func (s exportCertificateService) Issue(domain.IssueRequest, []byte) (domain.Certificate, error) {
@@ -122,7 +141,7 @@ func TestCertificateDetailsDisplayAbsoluteFilePaths(t *testing.T) {
 			t.Fatalf("证书详情缺少 %s 的绝对路径 %q：\n%s", label, path, got)
 		}
 	}
-	for _, want := range []string{"查看证书", "显示私钥、部署用完整链和根 CA", "部署说明"} {
+	for _, want := range []string{"查看证书", "显示私钥、部署用完整链和根 CA", "吊销证书", "必须再次确认", "部署说明"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("证书操作菜单缺少 %q：\n%s", want, got)
 		}
@@ -131,6 +150,55 @@ func TestCertificateDetailsDisplayAbsoluteFilePaths(t *testing.T) {
 		if strings.Contains(got, unwanted) {
 			t.Fatalf("证书操作菜单仍包含旧选项 %q：\n%s", unwanted, got)
 		}
+	}
+}
+
+func TestRevokeCertificateRequiresYOrYesConfirmation(t *testing.T) {
+	for _, confirmation := range []string{"y", "yes", "Y", "YES"} {
+		t.Run(confirmation, func(t *testing.T) {
+			var out bytes.Buffer
+			service := &captureRevocationService{}
+			a := &App{
+				ui:          ui.New(strings.NewReader("1\n"+confirmation+"\nsecret\n\n"), &out, false, nil),
+				revocations: service,
+			}
+			certificate := domain.Certificate{Serial: "1000", CommonName: "server.test"}
+			if err := a.revokeCertificate("issuing-ca", certificate); err != nil {
+				t.Fatal(err)
+			}
+			if service.calls != 1 || service.ca != "issuing-ca" || service.serial != "1000" {
+				t.Fatalf("unexpected revoke call: %#v", service)
+			}
+			got := out.String()
+			for _, want := range []string{"吊销证书", "确认永久吊销", "请输入 y 或 yes", "证书已吊销"} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("吊销确认界面缺少 %q：\n%s", want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRevokeCertificateRejectsOtherConfirmation(t *testing.T) {
+	for _, confirmation := range []string{"", "n", "是", "吊销 1000", "1"} {
+		t.Run("input_"+confirmation, func(t *testing.T) {
+			var out bytes.Buffer
+			service := &captureRevocationService{}
+			a := &App{
+				ui:          ui.New(strings.NewReader("1\n"+confirmation+"\n"), &out, false, nil),
+				revocations: service,
+			}
+			err := a.revokeCertificate("issuing-ca", domain.Certificate{Serial: "1000", CommonName: "server.test"})
+			if !errors.Is(err, errCancelled) {
+				t.Fatalf("err=%v, want errCancelled", err)
+			}
+			if service.calls != 0 {
+				t.Fatalf("confirmation %q unexpectedly revoked certificate", confirmation)
+			}
+			if !strings.Contains(out.String(), "未输入 y 或 yes，证书未吊销") {
+				t.Fatalf("缺少取消提示：\n%s", out.String())
+			}
+		})
 	}
 }
 

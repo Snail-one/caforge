@@ -87,7 +87,7 @@ func (a *App) Run() error {
 		a.ui.MenuOptionStatusHint("1", "CA 管理", a.ui.LabelBadge(fmt.Sprintf("%d 个", len(authorities)), len(authorities) > 0), "创建、查看和选择签发机构")
 		a.ui.MenuOptionStatusHint("2", "证书签发", currentBadge, "生成密钥签发或导入 CSR")
 		a.ui.MenuOptionStatusHint("3", "证书管理", certificateBadge, "查询、续期和导出证书")
-		a.ui.MenuOptionStatusHint("4", "吊销与 CRL", currentBadge, "永久吊销证书并管理 CRL")
+		a.ui.MenuOptionStatusHint("4", "CRL 管理", currentBadge, "查看或重新生成证书吊销列表")
 		a.ui.MenuExit("0/q", "退出")
 		a.ui.Printf("\n")
 		choice, e := a.ui.Ask("请选择: ")
@@ -693,15 +693,20 @@ func (a *App) certificateActions(ca, serial string) error {
 		a.ui.Printf("\n")
 		a.ui.MenuOptionHint("1", "查看证书", "显示私钥、部署用完整链和根 CA")
 		a.ui.MenuOptionHint("2", "续期", "生成新密钥，保留旧证书")
-		a.ui.MenuOptionHint("3", "导出 PEM", "证书、私钥和完整链")
-		a.ui.MenuOptionHint("4", "导出 PKCS#12", "带口令的完整证书链")
+		if status == 'V' {
+			a.ui.MenuOptionHint("3", "吊销证书", "永久吊销并立即更新 CRL，必须再次确认")
+		} else {
+			a.ui.MenuOptionStatusHint("3", "吊销证书", a.ui.LabelBadge("不可用", false), "只有有效证书可以吊销")
+		}
+		a.ui.MenuOptionHint("4", "导出 PEM", "证书、私钥和完整链")
+		a.ui.MenuOptionHint("5", "导出 PKCS#12", "带口令的完整证书链")
 		switch meta.Profile {
 		case domain.Server:
-			a.ui.MenuOptionHint("5", "部署说明", "服务器所需文件、fullchain 顺序和客户端信任关系")
+			a.ui.MenuOptionHint("6", "部署说明", "服务器所需文件、fullchain 顺序和客户端信任关系")
 		case domain.Client:
-			a.ui.MenuOptionHint("5", "查看客户端使用说明", "mTLS 客户端导入和服务器信任配置")
+			a.ui.MenuOptionHint("6", "查看客户端使用说明", "mTLS 客户端导入和服务器信任配置")
 		default:
-			a.ui.MenuOptionHint("5", "查看中间 CA 使用说明", "签发链、根 CA 信任关系和私钥保护")
+			a.ui.MenuOptionHint("6", "查看中间 CA 使用说明", "签发链、根 CA 信任关系和私钥保护")
 		}
 		a.ui.MenuExit("0/q", "返回")
 		a.ui.Printf("\n")
@@ -718,10 +723,16 @@ func (a *App) certificateActions(ca, serial string) error {
 		case "2":
 			e = a.renew(ca, serial)
 		case "3":
-			e = a.exportCertificate(ca, serial, domain.ExportPEM)
+			if status != 'V' {
+				a.ui.Warning("只有有效证书可以吊销")
+				break
+			}
+			e = a.revokeCertificate(ca, meta)
 		case "4":
-			e = a.exportCertificate(ca, serial, domain.ExportPKCS12)
+			e = a.exportCertificate(ca, serial, domain.ExportPEM)
 		case "5":
+			e = a.exportCertificate(ca, serial, domain.ExportPKCS12)
+		case "6":
 			a.showCertificateUsage(meta)
 			a.ui.Pause()
 		case "0", "q", "exit":
@@ -967,10 +978,9 @@ func (a *App) revocationMenu() error {
 		return e
 	}
 	for {
-		a.ui.Header("主菜单 / 吊销与 CRL")
-		a.ui.MenuOptionHint("1", "吊销证书", "不可撤销并立即更新 CRL")
-		a.ui.MenuOptionHint("2", "查看 CRL", "编号、更新时间和吊销条目")
-		a.ui.MenuOptionHint("3", "重新生成 CRL", "默认 nextUpdate 为 7 天")
+		a.ui.Header("主菜单 / CRL 管理")
+		a.ui.MenuOptionHint("1", "查看 CRL", "编号、更新时间和吊销条目")
+		a.ui.MenuOptionHint("2", "重新生成 CRL", "默认 nextUpdate 为 7 天")
 		a.ui.MenuExit("0/q", "返回")
 		a.ui.Printf("\n")
 		v, e := a.ui.Ask("请选择: ")
@@ -979,8 +989,6 @@ func (a *App) revocationMenu() error {
 		}
 		switch strings.ToLower(v) {
 		case "1":
-			e = a.revoke(ca)
-		case "2":
 			crl, er := a.revocations.Read(ca)
 			e = er
 			if er == nil {
@@ -992,7 +1000,7 @@ func (a *App) revocationMenu() error {
 				)
 				a.ui.Pause()
 			}
-		case "3":
+		case "2":
 			pw, er := a.ui.Password("CA 私钥口令: ")
 			e = er
 			if er == nil {
@@ -1014,27 +1022,9 @@ func (a *App) revocationMenu() error {
 		e = nil
 	}
 }
-func (a *App) revoke(ca string) error {
-	items, e := a.certificates.List(ca)
-	if e != nil {
-		return e
-	}
-	if len(items) == 0 {
-		a.ui.Warning("当前 CA 没有可吊销的签发记录")
-		a.ui.Pause()
-		return nil
-	}
-	for i, c := range items {
-		_, _, status, _ := a.certificates.Get(ca, c.Serial)
-		a.ui.MenuOptionStatusHint(strconv.Itoa(i+1), c.CommonName, a.ui.Badge(status), c.Serial)
-	}
-	a.ui.MenuExit("0/q", "返回")
-	a.ui.Printf("\n")
-	n, e := a.askIndex("选择要永久吊销的证书编号（0 返回）: ", len(items))
-	if e != nil {
-		return e
-	}
-	serial := items[n-1].Serial
+
+func (a *App) revokeCertificate(ca string, certificate domain.Certificate) error {
+	a.ui.Header("主菜单 / 证书管理 / " + certificate.Serial + " / 吊销证书")
 	reasons := revocation.Reasons()
 	for i, r := range reasons {
 		a.ui.MenuOptionHint(strconv.Itoa(i+1), r.Label, revocationReasonHint(r.Value))
@@ -1047,32 +1037,27 @@ func (a *App) revoke(ca string) error {
 	}
 	a.ui.Printf("\n")
 	a.ui.PrintDangerCard("确认永久吊销",
-		ui.CardField{Label: "证书", Value: items[n-1].CommonName},
-		ui.CardField{Label: "序列号", Value: serial},
+		ui.CardField{Label: "证书", Value: certificate.CommonName},
+		ui.CardField{Label: "序列号", Value: certificate.Serial},
 		ui.CardField{Label: "吊销原因", Value: reasons[ri-1].Label},
 		ui.CardField{Label: "影响", Value: "此操作不可撤销；成功后立即更新 CRL"},
 	)
-	for {
-		confirm, err := a.ui.Ask("请输入“吊销 " + serial + "”确认，或输入 0 返回: ")
-		if err != nil {
-			return err
-		}
-		if ui.IsBack(confirm) {
-			return errCancelled
-		}
-		if confirm != "吊销 "+serial {
-			a.ui.Warning("确认文字不匹配，证书尚未吊销，请重新输入")
-			continue
-		}
-		break
+	confirm, err := a.ui.Ask("确认永久吊销？请输入 y 或 yes，其他输入取消: ")
+	if err != nil {
+		return err
+	}
+	confirm = strings.ToLower(strings.TrimSpace(confirm))
+	if confirm != "y" && confirm != "yes" {
+		a.ui.Warning("未输入 y 或 yes，证书未吊销")
+		return errCancelled
 	}
 	pw, e := a.ui.Password("CA 私钥口令: ")
 	if e != nil {
 		return e
 	}
-	if e = a.revocations.Revoke(ca, serial, reasons[ri-1].Value, pw); e == nil {
+	if e = a.revocations.Revoke(ca, certificate.Serial, reasons[ri-1].Value, pw); e == nil {
 		a.ui.PrintDangerCard("证书已吊销",
-			ui.CardField{Label: "序列号", Value: serial},
+			ui.CardField{Label: "序列号", Value: certificate.Serial},
 			ui.CardField{Label: "吊销原因", Value: reasons[ri-1].Label},
 			ui.CardField{Label: "CRL", Value: "PEM 和 DER 已更新"},
 		)
