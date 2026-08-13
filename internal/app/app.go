@@ -337,6 +337,7 @@ func authorityHierarchyDisplay(authority domain.Authority, names map[string]stri
 }
 
 func (a *App) selectAuthority() error {
+	a.ui.Header("主菜单 / 证书签发 / 选择签发 CA")
 	id, e := a.chooseAuthority(false)
 	if e != nil || id == "" {
 		return e
@@ -352,8 +353,17 @@ func (a *App) chooseAuthority(rootOnly bool) (string, error) {
 	if e != nil {
 		return "", e
 	}
-	current, _ := a.repo.CurrentCA()
-	filtered := items[:0]
+	current := ""
+	if !rootOnly && a.repo != nil {
+		current, _ = a.repo.CurrentCA()
+	}
+	intermediateCounts := make(map[string]int)
+	for _, item := range items {
+		if !item.IsRoot() {
+			intermediateCounts[item.ParentID]++
+		}
+	}
+	filtered := make([]domain.Authority, 0, len(items))
 	for _, v := range items {
 		if !rootOnly || v.IsRoot() {
 			filtered = append(filtered, v)
@@ -377,7 +387,9 @@ func (a *App) chooseAuthority(rootOnly bool) (string, error) {
 		a.ui.Printf("\n")
 	}
 	for i, v := range filtered {
-		if v.ID == current {
+		if rootOnly {
+			a.ui.MenuOptionHint(strconv.Itoa(i+1), v.Name, fmt.Sprintf("%s · 已有 %d 个中间 CA", v.ID, intermediateCounts[v.ID]))
+		} else if v.ID == current {
 			a.ui.MenuOptionStatusHint(strconv.Itoa(i+1), v.Name, a.ui.LabelBadge("当前", true), v.ID)
 		} else {
 			a.ui.MenuOptionHint(strconv.Itoa(i+1), v.Name, v.ID)
@@ -417,9 +429,9 @@ func (a *App) issueMenu() error {
 			)
 		}
 		a.ui.Printf("\n")
-		a.ui.MenuOptionHint("1", "选择签发 CA", "决定后续证书由哪个根 CA 或中间 CA 签发")
-		a.ui.MenuOptionHint("2", "生成密钥并签发", "创建私钥和终端证书")
-		a.ui.MenuOptionHint("3", "导入 PEM CSR 签发", "验证请求后仅签发证书")
+		a.ui.MenuOptionHint("1", "生成密钥并签发", "创建私钥和终端证书")
+		a.ui.MenuOptionHint("2", "导入 PEM CSR 签发", "验证请求后仅签发证书")
+		a.ui.MenuOptionHint("3", "选择签发 CA", "决定后续证书由哪个根 CA 或中间 CA 签发")
 		a.ui.MenuExit("0/q", "返回")
 		a.ui.Printf("\n")
 		v, e := a.ui.Ask("请选择: ")
@@ -428,17 +440,17 @@ func (a *App) issueMenu() error {
 		}
 		switch strings.ToLower(v) {
 		case "1":
-			e = a.selectAuthority()
-		case "2":
 			ca, e = a.requireCurrent()
 			if e == nil {
 				e = a.issueGenerated(ca)
 			}
-		case "3":
+		case "2":
 			ca, e = a.requireCurrent()
 			if e == nil {
 				e = a.issueCSR(ca)
 			}
+		case "3":
+			e = a.selectAuthority()
 		case "0", "q", "exit":
 			return nil
 		default:

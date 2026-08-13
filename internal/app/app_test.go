@@ -152,6 +152,7 @@ func (s authorityListService) Get(id string) (domain.Authority, *x509.Certificat
 	}
 	return domain.Authority{}, nil, errors.New("authority not found")
 }
+func (s authorityListService) Select(string) error { return nil }
 
 func TestChooseAuthorityDisplaysAndMarksCurrentCA(t *testing.T) {
 	items := []domain.Authority{
@@ -176,6 +177,56 @@ func TestChooseAuthorityDisplaysAndMarksCurrentCA(t *testing.T) {
 	for _, want := range []string{"当前选择", "名称：joker-one", "CA ID：joker-one-3ac2f408", "[当前]", "joker-one-3ac2f408"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("CA 选择界面缺少 %q：\n%s", want, got)
+		}
+	}
+}
+
+func TestSelectSigningAuthorityUsesSeparatePage(t *testing.T) {
+	items := []domain.Authority{{ID: "joker-one", Name: "joker-one"}}
+	var out bytes.Buffer
+	a := &App{
+		ui:          ui.New(strings.NewReader("1\n\n"), &out, false, nil),
+		repo:        currentCARepository{current: "joker-one"},
+		authorities: authorityListService{items: items},
+	}
+	if err := a.selectAuthority(); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"CAForge  ›  证书签发  ›  选择签发 CA", "当前选择", "当前签发 CA 已更新"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("选择签发 CA 独立页面缺少 %q：\n%s", want, got)
+		}
+	}
+}
+
+func TestChooseRootDisplaysExistingIntermediateCount(t *testing.T) {
+	items := []domain.Authority{
+		{ID: "root-one", Name: "根一"},
+		{ID: "root-two", Name: "根二"},
+		{ID: "issuing-one", Name: "签发一", ParentID: "root-one"},
+		{ID: "issuing-two", Name: "签发二", ParentID: "root-one"},
+	}
+	var out bytes.Buffer
+	a := &App{
+		ui:          ui.New(strings.NewReader("1\n"), &out, false, nil),
+		authorities: authorityListService{items: items},
+	}
+	selected, err := a.chooseAuthority(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != "root-one" {
+		t.Fatalf("selected=%q, want root-one", selected)
+	}
+
+	got := out.String()
+	for _, want := range []string{
+		"root-one · 已有 2 个中间 CA",
+		"root-two · 已有 0 个中间 CA",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("根 CA 选择界面缺少 %q：\n%s", want, got)
 		}
 	}
 }
@@ -231,6 +282,9 @@ func TestIssueMenuContainsSigningCASelection(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("证书签发菜单缺少 %q：\n%s", want, got)
 		}
+	}
+	if !(strings.Index(got, "生成密钥并签发") < strings.Index(got, "导入 PEM CSR 签发") && strings.Index(got, "导入 PEM CSR 签发") < strings.LastIndex(got, "选择签发 CA")) {
+		t.Fatalf("证书签发菜单顺序不正确：\n%s", got)
 	}
 }
 
