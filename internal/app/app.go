@@ -53,6 +53,7 @@ type CertificateService interface {
 	Renew(string, string, int, []byte, []byte, bool) (domain.Certificate, error)
 	Export(string, string, domain.ExportFormat, []byte, []byte) ([]byte, error)
 	CertificateChain(string, string) ([]byte, error)
+	FilePaths(string, string) (certificate.FilePaths, error)
 	DeploymentMaterials(string, string) (certificate.DeploymentMaterials, error)
 }
 
@@ -560,8 +561,12 @@ func (a *App) certificateActions(ca, serial string) error {
 		if e != nil {
 			return e
 		}
+		paths, e := a.certificates.FilePaths(ca, serial)
+		if e != nil {
+			return e
+		}
 		a.ui.Header("主菜单 / 证书管理 / " + serial)
-		a.ui.PrintInfoCard("证书详情",
+		fields := []ui.CardField{
 			ui.CardField{Label: "状态", Value: a.ui.Badge(status)},
 			ui.CardField{Label: "通用名称", Value: meta.CommonName},
 			ui.CardField{Label: "模板", Value: string(meta.Profile)},
@@ -570,7 +575,19 @@ func (a *App) certificateActions(ca, serial string) error {
 			ui.CardField{Label: "DNS SAN", Value: emptyAs(strings.Join(meta.DNSNames, ", "), "无")},
 			ui.CardField{Label: "IP SAN", Value: emptyAs(strings.Join(meta.IPAddresses, ", "), "无")},
 			ui.CardField{Label: "续期来源", Value: emptyAs(meta.RenewedFrom, "无")},
-		)
+			ui.CardField{Label: "记录目录", Value: paths.Directory},
+			ui.CardField{Label: "证书文件", Value: paths.Certificate},
+			ui.CardField{Label: "完整证书链", Value: paths.Chain},
+		}
+		if paths.PrivateKey != "" {
+			fields = append(fields, ui.CardField{Label: "私钥文件", Value: paths.PrivateKey, Detail: "敏感文件，权限为 0600"})
+		} else {
+			fields = append(fields, ui.CardField{Label: "私钥文件", Value: "无（CAForge 未保存此记录的私钥）"})
+		}
+		if paths.RequestCSR != "" {
+			fields = append(fields, ui.CardField{Label: "原始 CSR", Value: paths.RequestCSR})
+		}
+		a.ui.PrintInfoCard("证书详情", fields...)
 		a.ui.Printf("\n")
 		a.ui.MenuOptionHint("1", "查看证书链", "按终端证书 → 中间 CA → 根 CA 展示，不含私钥")
 		a.ui.MenuOptionHint("2", "续期", "生成新密钥，保留旧证书")

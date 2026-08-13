@@ -63,6 +63,9 @@ func TestScriptedMenuCreatesRootAndExits(t *testing.T) {
 type exportCertificateService struct {
 	data      []byte
 	materials certificate.DeploymentMaterials
+	meta      domain.Certificate
+	parsed    *x509.Certificate
+	paths     certificate.FilePaths
 }
 
 func (s exportCertificateService) Issue(domain.IssueRequest, []byte) (domain.Certificate, error) {
@@ -73,7 +76,7 @@ func (s exportCertificateService) SignCSR(domain.CSRRequest, []byte) (domain.Cer
 }
 func (s exportCertificateService) List(string) ([]domain.Certificate, error) { return nil, nil }
 func (s exportCertificateService) Get(string, string) (domain.Certificate, *x509.Certificate, byte, error) {
-	return domain.Certificate{}, nil, 0, nil
+	return s.meta, s.parsed, 'V', nil
 }
 func (s exportCertificateService) Renew(string, string, int, []byte, []byte, bool) (domain.Certificate, error) {
 	return domain.Certificate{}, nil
@@ -82,8 +85,48 @@ func (s exportCertificateService) Export(string, string, domain.ExportFormat, []
 	return s.data, nil
 }
 func (s exportCertificateService) CertificateChain(string, string) ([]byte, error) { return nil, nil }
+func (s exportCertificateService) FilePaths(string, string) (certificate.FilePaths, error) {
+	return s.paths, nil
+}
 func (s exportCertificateService) DeploymentMaterials(string, string) (certificate.DeploymentMaterials, error) {
 	return s.materials, nil
+}
+
+func TestCertificateDetailsDisplayAbsoluteFilePaths(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "cas", "test-ca", "issued", "1000")
+	paths := certificate.FilePaths{
+		Directory:   base,
+		Certificate: filepath.Join(base, "cert.pem"),
+		PrivateKey:  filepath.Join(base, "key.pem"),
+		Chain:       filepath.Join(base, "chain.pem"),
+	}
+	now := time.Now()
+	service := exportCertificateService{
+		meta: domain.Certificate{Serial: "1000", CommonName: "fwq", Profile: domain.Server, HasKey: true},
+		parsed: &x509.Certificate{
+			NotBefore: now,
+			NotAfter:  now.AddDate(1, 0, 0),
+		},
+		paths: paths,
+	}
+	var out bytes.Buffer
+	a := &App{ui: ui.New(strings.NewReader("0\n"), &out, false, nil), certificates: service}
+	if err := a.certificateActions("test-ca", "1000"); err != nil {
+		t.Fatal(err)
+	}
+
+	got := out.String()
+	for label, path := range map[string]string{
+		"记录目录":  base,
+		"证书文件":  paths.Certificate,
+		"完整证书链": paths.Chain,
+		"私钥文件":  paths.PrivateKey,
+	} {
+		if !strings.Contains(got, label+"："+path) {
+			t.Fatalf("证书详情缺少 %s 的绝对路径 %q：\n%s", label, path, got)
+		}
+	}
 }
 
 func TestExportDisplaysAbsolutePath(t *testing.T) {

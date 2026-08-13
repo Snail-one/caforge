@@ -69,6 +69,17 @@ func TestEndToEndAndOpenSSLCompatibility(t *testing.T) {
 	if !bytes.Contains(materials.PrivateKeyPEM, []byte("-----BEGIN PRIVATE KEY-----")) || materials.PrivateKeyEncrypted {
 		t.Fatalf("unexpected server private key: encrypted=%v data=%q", materials.PrivateKeyEncrypted, materials.PrivateKeyPEM)
 	}
+	paths, err := certs.FilePaths(intermediate.ID, server.Serial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIssuedDir := filepath.Join(rootDir, "cas", intermediate.ID, "issued", server.Serial)
+	if paths.Directory != wantIssuedDir ||
+		paths.Certificate != filepath.Join(wantIssuedDir, "cert.pem") ||
+		paths.PrivateKey != filepath.Join(wantIssuedDir, "key.pem") ||
+		paths.Chain != filepath.Join(wantIssuedDir, "chain.pem") {
+		t.Fatalf("unexpected certificate file paths: %#v", paths)
+	}
 	client, err := certs.Issue(domain.IssueRequest{CAID: intermediate.ID, CommonName: "client", Profile: domain.Client, Algorithm: domain.ECDSAP256, Days: 397, EncryptKey: false}, intPW)
 	if err != nil {
 		t.Fatal(err)

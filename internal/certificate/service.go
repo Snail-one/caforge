@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -27,6 +28,14 @@ type DeploymentMaterials struct {
 	IntermediateChainPEM []byte
 	RootCAPEM            []byte
 	PrivateKeyEncrypted  bool
+}
+
+type FilePaths struct {
+	Directory   string
+	Certificate string
+	PrivateKey  string
+	Chain       string
+	RequestCSR  string
 }
 
 type Service struct {
@@ -217,6 +226,26 @@ func (s *Service) Get(caID, serial string) (domain.Certificate, *x509.Certificat
 func (s *Service) CertificateChain(caID, serial string) ([]byte, error) {
 	_, _, _, chain, err := s.repo.LoadCertificate(caID, serial)
 	return chain, err
+}
+
+func (s *Service) FilePaths(caID, serial string) (FilePaths, error) {
+	var paths FilePaths
+	meta, _, _, _, err := s.repo.LoadCertificate(caID, serial)
+	if err != nil {
+		return paths, err
+	}
+	base := filepath.Join(s.repo.Root(), "cas", caID, "issued", strings.ToUpper(serial))
+	paths = FilePaths{
+		Directory:   base,
+		Certificate: filepath.Join(base, "cert.pem"),
+		Chain:       filepath.Join(base, "chain.pem"),
+	}
+	if meta.HasKey {
+		paths.PrivateKey = filepath.Join(base, "key.pem")
+	} else if meta.Profile != domain.Intermediate {
+		paths.RequestCSR = filepath.Join(base, "request.csr.pem")
+	}
+	return paths, nil
 }
 
 func (s *Service) DeploymentMaterials(caID, serial string) (DeploymentMaterials, error) {
