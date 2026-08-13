@@ -65,7 +65,7 @@ go vet ./...
 
 ## GitHub 自动化
 
-- 推送 `v*` 标签会运行仅包含“编译”和“发布”两个 Job 的正式流水线，生成四个平台二进制、版本化 SHA-256 校验文件、提交说明和 GitHub Release。
+- 推送 `v*` 标签会运行仅包含“编译”和“发布”两个 Job 的正式流水线，生成四个平台二进制、固定名称的 `checksums.txt`、提交说明和 GitHub Release。
 - Dependabot 每周检查 Actions 与 Go Modules 更新。
 
 发布示例：

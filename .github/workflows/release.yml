@@ -96,7 +96,7 @@ jobs:
 
       - name: Generate SHA-256 checksums
         working-directory: release-assets
-        run: sha256sum caforge_* > "checksums_${RELEASE_TAG}.txt"
+        run: sha256sum caforge_* > checksums.txt
 
       - name: Generate release notes
         env:

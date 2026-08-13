@@ -34,10 +34,12 @@ caforge_linux_amd64_v1.0.0
 caforge_linux_arm64_v1.0.0
 caforge_darwin_amd64_v1.0.0
 caforge_darwin_arm64_v1.0.0
-checksums_v1.0.0.txt
+checksums.txt
 ```
 
 所有二进制使用相同的版本、完整提交 SHA 和提交时间，并通过 `-trimpath`、`CGO_ENABLED=0` 构建。
+
+每个 GitHub Release 都使用固定名称 `checksums.txt`。Release 本身已经按版本隔离附件，因此无需在校验文件名中重复版本号；下载后可直接运行 `sha256sum -c checksums.txt`。
 
 发布说明由两部分组成：`scripts/generate_release_notes.sh` 列出上一个版本以来的直接提交，GitHub 原生 Release Notes 补充 Pull Request、贡献者和比较链接。
 
