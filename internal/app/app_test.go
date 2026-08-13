@@ -211,6 +211,9 @@ func TestAuthorityListShowsWhichRootIssuedIntermediate(t *testing.T) {
 			t.Fatalf("CA 层级显示缺少 %q：\n%s", want, got)
 		}
 	}
+	if strings.Contains(got, "[当前]") {
+		t.Fatalf("CA 层级列表不应显示当前标记：\n%s", got)
+	}
 }
 
 func TestIssueMenuContainsSigningCASelection(t *testing.T) {

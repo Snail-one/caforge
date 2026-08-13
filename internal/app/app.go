@@ -258,10 +258,6 @@ func (a *App) showAuthorities() error {
 	for _, item := range items {
 		names[item.ID] = item.Name
 	}
-	current := ""
-	if a.repo != nil {
-		current, _ = a.repo.CurrentCA()
-	}
 	children := make(map[string][]domain.Authority)
 	for _, item := range items {
 		if !item.IsRoot() {
@@ -270,24 +266,17 @@ func (a *App) showAuthorities() error {
 	}
 	displayed := make([]domain.Authority, 0, len(items))
 	rendered := make(map[string]bool, len(items))
-	status := func(kind string, item domain.Authority) string {
-		value := a.ui.LabelBadge(kind, true)
-		if item.ID == current {
-			value += " " + a.ui.LabelBadge("当前", true)
-		}
-		return value
-	}
 	for _, root := range items {
 		if !root.IsRoot() {
 			continue
 		}
 		displayed = append(displayed, root)
 		rendered[root.ID] = true
-		a.ui.MenuOptionStatusHint(strconv.Itoa(len(displayed)), root.Name, status("根 CA", root), root.ID+" · 自签名 · 到期 "+root.NotAfter.Local().Format("2006-01-02"))
+		a.ui.MenuOptionStatusHint(strconv.Itoa(len(displayed)), root.Name, a.ui.LabelBadge("根 CA", true), root.ID+" · 自签名 · 到期 "+root.NotAfter.Local().Format("2006-01-02"))
 		for index, child := range children[root.ID] {
 			displayed = append(displayed, child)
 			rendered[child.ID] = true
-			a.ui.MenuChildOptionStatusHint(strconv.Itoa(len(displayed)), child.Name, status("中间 CA", child), child.ID+" · 到期 "+child.NotAfter.Local().Format("2006-01-02"), index == len(children[root.ID])-1)
+			a.ui.MenuChildOptionStatusHint(strconv.Itoa(len(displayed)), child.Name, a.ui.LabelBadge("中间 CA", true), child.ID+" · 到期 "+child.NotAfter.Local().Format("2006-01-02"), index == len(children[root.ID])-1)
 		}
 	}
 	for _, item := range items {
