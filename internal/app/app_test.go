@@ -129,6 +129,47 @@ func TestCertificateDetailsDisplayAbsoluteFilePaths(t *testing.T) {
 	}
 }
 
+type currentCARepository struct {
+	Repository
+	current string
+}
+
+func (r currentCARepository) CurrentCA() (string, error) { return r.current, nil }
+
+type authorityListService struct {
+	AuthorityService
+	items []domain.Authority
+}
+
+func (s authorityListService) List() ([]domain.Authority, error) { return s.items, nil }
+
+func TestChooseAuthorityDisplaysAndMarksCurrentCA(t *testing.T) {
+	items := []domain.Authority{
+		{ID: "joker-536f4a6c", Name: "joker"},
+		{ID: "joker-one-3ac2f408", Name: "joker-one"},
+	}
+	var out bytes.Buffer
+	a := &App{
+		ui:          ui.New(strings.NewReader("1\n"), &out, false, nil),
+		repo:        currentCARepository{current: items[1].ID},
+		authorities: authorityListService{items: items},
+	}
+	selected, err := a.chooseAuthority(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != items[0].ID {
+		t.Fatalf("selected=%q, want %q", selected, items[0].ID)
+	}
+
+	got := out.String()
+	for _, want := range []string{"当前选择", "名称：joker-one", "CA ID：joker-one-3ac2f408", "[当前]", "joker-one-3ac2f408"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("CA 选择界面缺少 %q：\n%s", want, got)
+		}
+	}
+}
+
 func TestExportDisplaysAbsolutePath(t *testing.T) {
 	workingDir := t.TempDir()
 	previous, err := os.Getwd()

@@ -303,6 +303,7 @@ func (a *App) chooseAuthority(rootOnly bool) (string, error) {
 	if e != nil {
 		return "", e
 	}
+	current, _ := a.repo.CurrentCA()
 	filtered := items[:0]
 	for _, v := range items {
 		if !rootOnly || v.IsRoot() {
@@ -312,12 +313,34 @@ func (a *App) chooseAuthority(rootOnly bool) (string, error) {
 	if len(filtered) == 0 {
 		return "", errors.New("没有可选 CA")
 	}
+	if !rootOnly {
+		currentName := "未选择"
+		for _, item := range items {
+			if item.ID == current {
+				currentName = item.Name
+				break
+			}
+		}
+		a.ui.PrintInfoCard("当前选择",
+			ui.CardField{Label: "名称", Value: currentName},
+			ui.CardField{Label: "CA ID", Value: emptyAs(current, "无")},
+		)
+		a.ui.Printf("\n")
+	}
 	for i, v := range filtered {
-		a.ui.MenuOptionHint(strconv.Itoa(i+1), v.Name, v.ID)
+		if v.ID == current {
+			a.ui.MenuOptionStatusHint(strconv.Itoa(i+1), v.Name, a.ui.LabelBadge("当前", true), v.ID)
+		} else {
+			a.ui.MenuOptionHint(strconv.Itoa(i+1), v.Name, v.ID)
+		}
 	}
 	a.ui.MenuExit("0/q", "返回")
 	a.ui.Printf("\n")
-	n, e := a.askIndex("选择编号（决定后续操作使用哪个 CA，0 返回）: ", len(filtered))
+	prompt := "选择编号（决定后续操作使用哪个 CA，0 返回）: "
+	if rootOnly {
+		prompt = "选择根 CA 编号（作为中间 CA 的父级，0 返回）: "
+	}
+	n, e := a.askIndex(prompt, len(filtered))
 	if e != nil {
 		return "", e
 	}
