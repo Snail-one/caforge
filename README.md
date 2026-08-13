@@ -4,11 +4,17 @@ CAForge 是一个使用 Go 编写的本地、单用户 CA 管理工具。它通�
 
 ## 构建与运行
 
-需要 Go 1.26：
+需要 Go 1.26。无需安装 `make`，直接运行构建脚本：
 
 ```sh
-make build
+./build.sh
 ./caforge
+```
+
+可选地指定输出路径和版本号：
+
+```sh
+VERSION=1.0.0 ./build.sh ./dist/caforge
 ```
 
 数据默认保存在 `~/.caforge`。可在测试或隔离环境中覆盖：
