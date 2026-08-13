@@ -54,9 +54,23 @@ platform: linux/amd64
 ## 验证
 
 ```sh
-make test
-make vet
-make race
+go mod verify
+go test ./...
+go vet ./...
 ```
 
 端到端测试会执行根 CA → 中间 CA → 服务器/客户端证书 → CSR → 续期 → 吊销 → CRL → PKCS#12，并在可用时调用 OpenSSL 验证证书链和 CRL。
+
+## GitHub 自动化
+
+- 推送 `v*` 标签会运行发布流水线，执行测试、静态检查和 race detector，再生成四个平台二进制、版本化 SHA-256 校验文件、提交说明和 GitHub Release。
+- Dependabot 每周检查 Actions 与 Go Modules 更新。
+
+发布示例：
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+完整的触发方式、产物命名、权限模型和失败恢复说明见 [GitHub CI/CD 文档](docs/CI_CD.md)。

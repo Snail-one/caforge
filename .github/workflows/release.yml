@@ -1,0 +1,188 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag, for example v1.0.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: validate release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      commit: ${{ steps.metadata.outputs.commit }}
+      build_date: ${{ steps.metadata.outputs.build_date }}
+
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and capture metadata
+        id: metadata
+        env:
+          RELEASE_VERSION: ${{ inputs.tag_name || github.ref_name }}
+        run: |
+          scripts/validate_release_version.sh "${RELEASE_VERSION}"
+          if git rev-parse --verify --quiet "refs/tags/${RELEASE_VERSION}" >/dev/null; then
+            TAG_COMMIT="$(git rev-list -n 1 "refs/tags/${RELEASE_VERSION}")"
+            if [[ "${TAG_COMMIT}" != "${GITHUB_SHA}" ]]; then
+              echo "Existing tag ${RELEASE_VERSION} points to ${TAG_COMMIT}, not ${GITHUB_SHA}" >&2
+              exit 1
+            fi
+          fi
+          echo "version=${RELEASE_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "commit=${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
+
+  test:
+    name: release quality gate
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Validate automation scripts
+        run: bash -n build.sh scripts/*.sh
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Race detector
+        run: go test -race ./internal/pki ./internal/store ./internal/authority ./internal/certificate ./internal/revocation
+
+  build:
+    name: build (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: [validate, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+      RELEASE_BUILD_DATE: ${{ needs.validate.outputs.build_date }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            artifact: caforge_linux_amd64
+          - goos: linux
+            goarch: arm64
+            artifact: caforge_linux_arm64
+          - goos: darwin
+            goarch: amd64
+            artifact: caforge_darwin_amd64
+          - goos: darwin
+            goarch: arm64
+            artifact: caforge_darwin_arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build release binary
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ env.RELEASE_VERSION }}
+          COMMIT: ${{ env.RELEASE_COMMIT }}
+          BUILD_DATE: ${{ env.RELEASE_BUILD_DATE }}
+        run: ./build.sh "dist/${{ matrix.artifact }}_${RELEASE_VERSION}"
+
+      - name: Verify embedded metadata
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          VERSION_OUTPUT="$("dist/${{ matrix.artifact }}_${RELEASE_VERSION}" --version)"
+          grep -Fx "caforge ${RELEASE_VERSION}" <<< "${VERSION_OUTPUT}"
+          grep -Fx "commit: ${RELEASE_COMMIT}" <<< "${VERSION_OUTPUT}"
+          grep -Fx "build date: ${RELEASE_BUILD_DATE}" <<< "${VERSION_OUTPUT}"
+          grep -Fx "platform: linux/amd64" <<< "${VERSION_OUTPUT}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}_${{ env.RELEASE_VERSION }}
+          path: dist/${{ matrix.artifact }}_${{ env.RELEASE_VERSION }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish GitHub Release
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.version }}
+
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        working-directory: release-assets
+        run: sha256sum caforge_* > "checksums_${RELEASE_TAG}.txt"
+
+      - name: Generate direct-commit release notes
+        env:
+          TARGET_SHA: ${{ needs.validate.outputs.commit }}
+        run: bash scripts/generate_release_notes.sh "${RUNNER_TEMP}/release-notes.md"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: CAForge ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ needs.validate.outputs.commit }}
+          body_path: ${{ runner.temp }}/release-notes.md
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release-assets/*
