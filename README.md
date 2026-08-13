@@ -4,16 +4,16 @@ CAForge 是一个使用 Go 编写的本地、单用户 CA 管理工具。它通�
 
 ## 安装、更新与卸载
 
-安装脚本支持 Linux/macOS 的 amd64/arm64，默认安装到当前用户的 `~/.local/bin/caforge`，不需要 root：
+安装脚本支持 Linux/macOS 的 amd64/arm64，默认安装到 `/usr/local/bin/caforge`：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Snail-one/caforge/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Snail-one/caforge/main/scripts/install.sh | sudo sh
 ```
 
 安装后可通过相同脚本或 CAForge 命令更新到最新正式版本：
 
 ```sh
-caforge update
+sudo caforge update
 ```
 
 更新会先获取 `checksums.txt`，比较当前版本和文件 SHA-256；需要更新时先下载到临时目录，校验通过并确认新程序版本后再原子替换。当前程序损坏但版本号相同时会自动修复。
@@ -21,18 +21,20 @@ caforge update
 卸载需要输入 `y` 或 `yes` 确认，只删除程序文件，始终保留 `~/.caforge` 或 `CAFORGE_HOME` 中的根 CA、中间 CA、私钥、证书、索引和 CRL：
 
 ```sh
-caforge uninstall
+sudo caforge uninstall
 ```
 
 也可以直接运行管理脚本，并可指定正式版本：
 
 ```sh
-sh scripts/install.sh
-sh scripts/install.sh v1.0.0
-sh scripts/install.sh --uninstall
+sudo sh scripts/install.sh
+sudo sh scripts/install.sh v1.0.0
+sudo sh scripts/install.sh --uninstall
 ```
 
-完整流程和可选环境变量见 [安装、更新与卸载文档](docs/INSTALL_UPDATE.md)。如果 `~/.local/bin` 不在 `PATH` 中，安装脚本会给出提示。
+完整流程和可选环境变量见 [安装、更新与卸载文档](docs/INSTALL_UPDATE.md)。`/usr/local/bin` 通常已包含在系统 `PATH` 中。
+
+安装、更新和卸载因需要写入 `/usr/local/bin` 而使用 `sudo`；CAForge 正常运行和管理当前用户的 `~/.caforge` 时不要使用 `sudo`。
 
 ## 从源码构建与运行
 

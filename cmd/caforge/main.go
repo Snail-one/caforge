@@ -76,11 +76,12 @@ func printUsage() {
   caforge --version
 
 命令：
-  update       更新到最新正式版本，并校验 SHA-256
+  update       更新 /usr/local/bin/caforge，并校验 SHA-256
   uninstall    卸载程序，保留全部 CA 数据
   --version    显示版本和构建信息
   --help       显示帮助
 
+安装、更新和卸载通常需要 sudo；正常运行不需要 root。
 数据目录默认为 ~/.caforge，可用 CAFORGE_HOME 覆盖。`)
 }
 

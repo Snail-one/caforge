@@ -20,7 +20,7 @@ func TestInstallScriptSyntaxAndHelp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("安装脚本帮助失败: %v\n%s", err, output)
 	}
-	for _, want := range []string{"安装或更新", "uninstall", "CAFORGE_INSTALL_DIR", "不删除 ~/.caforge"} {
+	for _, want := range []string{"安装或更新", "uninstall", "CAFORGE_INSTALL_DIR", "/usr/local/bin", "不删除 ~/.caforge"} {
 		if !strings.Contains(string(output), want) {
 			t.Fatalf("安装脚本帮助缺少 %q：\n%s", want, output)
 		}

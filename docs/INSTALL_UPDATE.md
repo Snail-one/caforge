@@ -5,7 +5,7 @@ CAForge 使用 `scripts/install.sh` 统一完成首次安装、更新、指定�
 ## 默认位置
 
 ```text
-程序：~/.local/bin/caforge
+程序：/usr/local/bin/caforge
 数据：~/.caforge
 ```
 
@@ -14,7 +14,7 @@ CAForge 使用 `scripts/install.sh` 统一完成首次安装、更新、指定�
 可通过环境变量覆盖位置：
 
 ```text
-CAFORGE_INSTALL_DIR   程序安装目录，默认 ~/.local/bin
+CAFORGE_INSTALL_DIR   程序安装目录，默认 /usr/local/bin
 CAFORGE_BINARY_NAME   程序文件名，默认 caforge
 CAFORGE_VERSION       正式 Release 标签，默认 latest
 CAFORGE_HOME          CA 数据目录，默认 ~/.caforge
@@ -23,14 +23,14 @@ CAFORGE_HOME          CA 数据目录，默认 ~/.caforge
 ## 安装
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Snail-one/caforge/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Snail-one/caforge/main/scripts/install.sh | sudo sh
 ```
 
 指定版本：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Snail-one/caforge/main/scripts/install.sh |
-  CAFORGE_VERSION=v1.0.0 sh
+  sudo env CAFORGE_VERSION=v1.0.0 sh
 ```
 
 脚本支持：
@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/Snail-one/caforge/main/scripts/inst
 ## 更新
 
 ```sh
-caforge update
+sudo caforge update
 ```
 
 更新顺序：
@@ -65,7 +65,7 @@ caforge update
 ## 卸载
 
 ```sh
-caforge uninstall
+sudo caforge uninstall
 ```
 
 卸载前会显示：
@@ -79,7 +79,7 @@ caforge uninstall
 也可直接运行：
 
 ```sh
-sh scripts/install.sh --uninstall
+sudo sh scripts/install.sh --uninstall
 ```
 
 ## 安全边界
@@ -90,8 +90,10 @@ sh scripts/install.sh --uninstall
 - 正式目标路径只在所有验证通过后替换。
 - 卸载绝不递归删除 `CAFORGE_HOME`。
 
-如果安装到系统目录，可显式指定目录并自行提供所需权限：
+如果明确需要用户级安装，也可以覆盖目录且不使用 `sudo`：
 
 ```sh
-CAFORGE_INSTALL_DIR=/usr/local/bin sh scripts/install.sh
+CAFORGE_INSTALL_DIR="$HOME/.local/bin" sh scripts/install.sh
 ```
+
+无论程序安装在哪里，日常运行 `caforge` 时都不需要 root，也不应使用 `sudo` 管理当前用户的 CA 数据。

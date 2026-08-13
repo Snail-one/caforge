@@ -63,15 +63,15 @@ release_card() {
 usage() {
 	printf '%s\n' \
 		'用法：' \
-		'  sh scripts/install.sh [版本]' \
-		'  sh scripts/install.sh uninstall' \
+		'  sudo sh scripts/install.sh [版本]' \
+		'  sudo sh scripts/install.sh uninstall' \
 		'' \
 		'不指定版本时安装或更新到最新正式版本；也可指定标签，例如 v1.0.0。' \
 		'卸载只删除 CAForge 程序，不删除 ~/.caforge 或 CAFORGE_HOME 中的 CA 数据。' \
 		'' \
 		'可选环境变量：' \
 		'  CAFORGE_VERSION       安装的发布标签，默认为 latest' \
-		'  CAFORGE_INSTALL_DIR   安装目录，默认为 ~/.local/bin' \
+		'  CAFORGE_INSTALL_DIR   安装目录，默认为 /usr/local/bin' \
 		'  CAFORGE_BINARY_NAME   安装后的命令名，默认为 caforge'
 }
 
@@ -101,8 +101,7 @@ esac
 
 init_colors
 
-[ -n "${HOME:-}" ] || fail "无法确定用户主目录，请设置 HOME"
-INSTALL_DIR="${CAFORGE_INSTALL_DIR:-${HOME}/.local/bin}"
+INSTALL_DIR="${CAFORGE_INSTALL_DIR:-/usr/local/bin}"
 
 case "$BINARY_NAME" in
 	""|*/*) fail "命令名不能为空或包含路径分隔符" ;;
@@ -113,7 +112,11 @@ case "$INSTALL_DIR" in
 esac
 
 TARGET="${INSTALL_DIR}/${BINARY_NAME}"
-DATA_HOME="${CAFORGE_HOME:-${HOME}/.caforge}"
+
+command -v id >/dev/null 2>&1 || fail "缺少必要命令：id"
+if [ "$INSTALL_DIR" = "/usr/local/bin" ] && [ "$(id -u)" -ne 0 ]; then
+	fail "安装、更新或卸载 $TARGET 需要管理员权限，请使用 sudo 运行"
+fi
 
 if [ "$MODE" = "uninstall" ]; then
 	banner "自身卸载"
@@ -132,7 +135,7 @@ if [ "$MODE" = "uninstall" ]; then
 	fi
 	info "当前版本：$current"
 	info "程序路径：$TARGET"
-	info "CA 数据：$DATA_HOME（保留，不会删除）"
+	info "CA 数据：全部保留（不会访问或删除 ~/.caforge 或 CAFORGE_HOME）"
 	printf '\n'
 	warn "卸载后命令将不可用，但所有 CA、私钥、证书和 CRL 数据都会保留。"
 	printf '确认卸载？请输入 y 或 yes，其他输入取消： '
@@ -146,7 +149,7 @@ if [ "$MODE" = "uninstall" ]; then
 	rm -f "$TARGET"
 	[ ! -e "$TARGET" ] && [ ! -L "$TARGET" ] || fail "无法删除程序文件：$TARGET"
 	result "CAForge 卸载完成。"
-	info "CA 数据已保留：$DATA_HOME"
+	info "CA 数据已保留。"
 	exit 0
 fi
 
