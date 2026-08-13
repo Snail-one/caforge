@@ -2,6 +2,7 @@ package app
 
 import (
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -570,7 +571,7 @@ func (a *App) certificateActions(ca, serial string) error {
 			ui.CardField{Label: "续期来源", Value: emptyAs(meta.RenewedFrom, "无")},
 		)
 		a.ui.Printf("\n")
-		a.ui.MenuOptionHint("1", "查看证书链", "PEM 格式")
+		a.ui.MenuOptionHint("1", "查看证书链", "按终端证书 → 中间 CA → 根 CA 展示，不含私钥")
 		a.ui.MenuOptionHint("2", "续期", "生成新密钥，保留旧证书")
 		a.ui.MenuOptionHint("3", "导出 PEM", "证书、私钥和完整链")
 		a.ui.MenuOptionHint("4", "导出 PKCS#12", "带口令的完整证书链")
@@ -584,8 +585,9 @@ func (a *App) certificateActions(ca, serial string) error {
 		case "1":
 			chain, e := a.certificates.CertificateChain(ca, serial)
 			if e == nil {
-				a.ui.MenuSection("PEM 证书链")
-				a.ui.Printf("%s\n", chain)
+				e = a.showCertificateChain(chain)
+			}
+			if e == nil {
 				a.ui.Pause()
 			}
 		case "2":
@@ -605,6 +607,66 @@ func (a *App) certificateActions(ca, serial string) error {
 		}
 		e = nil
 	}
+}
+
+func (a *App) showCertificateChain(chain []byte) error {
+	type chainItem struct {
+		certificate *x509.Certificate
+		pem         []byte
+	}
+	var items []chainItem
+	rest := chain
+	for len(strings.TrimSpace(string(rest))) > 0 {
+		block, remaining := pem.Decode(rest)
+		if block == nil {
+			return errors.New("证书链包含无法解析的 PEM 数据")
+		}
+		rest = remaining
+		if block.Type != "CERTIFICATE" {
+			return fmt.Errorf("证书链包含非证书 PEM 块 %q", block.Type)
+		}
+		certificate, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return fmt.Errorf("解析证书链失败: %w", err)
+		}
+		items = append(items, chainItem{certificate: certificate, pem: pem.EncodeToMemory(block)})
+	}
+	if len(items) == 0 {
+		return errors.New("证书链为空")
+	}
+
+	a.ui.Printf("\n")
+	a.ui.PrintInfoCard("证书链说明",
+		ui.CardField{Label: "顺序", Value: "终端证书 → 中间 CA → 根 CA"},
+		ui.CardField{Label: "验证", Value: "每一项由下一项签发，最后由受信任的根 CA 建立信任"},
+		ui.CardField{Label: "安全", Value: a.ui.LabelBadge("仅公开证书，不含私钥", true)},
+	)
+
+	for index, item := range items {
+		role, purpose := certificateRole(item.certificate, index, len(items))
+		a.ui.Printf("\n")
+		a.ui.MenuSection(fmt.Sprintf("[%d/%d] %s", index+1, len(items), role))
+		a.ui.PrintInfoCard(item.certificate.Subject.CommonName,
+			ui.CardField{Label: "角色", Value: role},
+			ui.CardField{Label: "用途", Value: purpose},
+			ui.CardField{Label: "主题", Value: item.certificate.Subject.String()},
+			ui.CardField{Label: "签发者", Value: item.certificate.Issuer.String()},
+			ui.CardField{Label: "序列号", Value: strings.ToUpper(item.certificate.SerialNumber.Text(16))},
+			ui.CardField{Label: "有效期", Value: item.certificate.NotBefore.Local().Format(time.RFC3339) + " — " + item.certificate.NotAfter.Local().Format(time.RFC3339)},
+		)
+		a.ui.Printf("\n%s", item.pem)
+	}
+	return nil
+}
+
+func certificateRole(certificate *x509.Certificate, index, total int) (string, string) {
+	if !certificate.IsCA {
+		return "终端证书", "提供给服务器或客户端使用，由上级 CA 验证身份"
+	}
+	if index == total-1 && certificate.Subject.String() == certificate.Issuer.String() && certificate.CheckSignatureFrom(certificate) == nil {
+		return "根 CA 证书（信任锚）", "安装到客户端或系统信任库，用于建立整条证书链的最终信任"
+	}
+	return "中间 CA 证书", "隔离根 CA 与日常签发操作，用于验证下一级证书"
 }
 func (a *App) renew(ca, serial string) error {
 	days, e := a.days("新证书有效天数 [397]: ", 397)
