@@ -671,6 +671,10 @@ func (a *App) exportCertificate(ca, serial string, format domain.ExportFormat) e
 	if path == "" {
 		path = def
 	}
+	path, e = filepath.Abs(filepath.Clean(path))
+	if e != nil {
+		return fmt.Errorf("无法解析输出路径: %w", e)
+	}
 	if _, e = os.Stat(path); e == nil {
 		ok, er := a.ui.Confirm("文件已存在，覆盖？")
 		if er != nil {
@@ -680,8 +684,8 @@ func (a *App) exportCertificate(ca, serial string, format domain.ExportFormat) e
 			return errCancelled
 		}
 	}
-	if e = os.WriteFile(filepath.Clean(path), data, 0600); e == nil {
-		e = os.Chmod(filepath.Clean(path), 0600)
+	if e = os.WriteFile(path, data, 0600); e == nil {
+		e = os.Chmod(path, 0600)
 	}
 	if e == nil {
 		a.ui.PrintSuccessCard("证书导出完成", ui.CardField{Label: "格式", Value: string(format)}, ui.CardField{Label: "文件", Value: path})

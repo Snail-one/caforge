@@ -2,6 +2,9 @@ package app
 
 import (
 	"bytes"
+	"crypto/x509"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -46,6 +49,81 @@ func TestScriptedMenuCreatesRootAndExits(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "\x1b[") {
 		t.Fatal("non-color UI emitted ANSI")
+	}
+}
+
+type exportCertificateService struct{ data []byte }
+
+func (s exportCertificateService) Issue(domain.IssueRequest, []byte) (domain.Certificate, error) {
+	return domain.Certificate{}, nil
+}
+func (s exportCertificateService) SignCSR(domain.CSRRequest, []byte) (domain.Certificate, error) {
+	return domain.Certificate{}, nil
+}
+func (s exportCertificateService) List(string) ([]domain.Certificate, error) { return nil, nil }
+func (s exportCertificateService) Get(string, string) (domain.Certificate, *x509.Certificate, byte, error) {
+	return domain.Certificate{}, nil, 0, nil
+}
+func (s exportCertificateService) Renew(string, string, int, []byte, []byte, bool) (domain.Certificate, error) {
+	return domain.Certificate{}, nil
+}
+func (s exportCertificateService) Export(string, string, domain.ExportFormat, []byte, []byte) ([]byte, error) {
+	return s.data, nil
+}
+func (s exportCertificateService) CertificateChain(string, string) ([]byte, error) { return nil, nil }
+
+func TestExportDisplaysAbsolutePath(t *testing.T) {
+	workingDir := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chdir(workingDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+
+	var out bytes.Buffer
+	view := ui.New(strings.NewReader("\n\n"), &out, false, nil)
+	a := &App{ui: view, certificates: exportCertificateService{data: []byte("certificate")}}
+	if err = a.exportCertificate("ca", "1000", domain.ExportPEM); err != nil {
+		t.Fatal(err)
+	}
+
+	want := filepath.Join(workingDir, "1000.pem")
+	if !strings.Contains(out.String(), "文件："+want) {
+		t.Fatalf("成功卡片未显示绝对路径 %q：\n%s", want, out.String())
+	}
+	if data, readErr := os.ReadFile(want); readErr != nil || string(data) != "certificate" {
+		t.Fatalf("导出文件错误：data=%q err=%v", data, readErr)
+	}
+}
+
+func TestPKCS12ExportDisplaysAbsolutePath(t *testing.T) {
+	workingDir := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chdir(workingDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+
+	var out bytes.Buffer
+	// Private-key password (empty), export password twice, default path, pause.
+	view := ui.New(strings.NewReader("\nexport-secret\nexport-secret\n\n\n"), &out, false, nil)
+	a := &App{ui: view, certificates: exportCertificateService{data: []byte("pkcs12")}}
+	if err = a.exportCertificate("ca", "1001", domain.ExportPKCS12); err != nil {
+		t.Fatal(err)
+	}
+
+	want := filepath.Join(workingDir, "1001.p12")
+	if !strings.Contains(out.String(), "文件："+want) {
+		t.Fatalf("成功卡片未显示 PKCS#12 绝对路径 %q：\n%s", want, out.String())
+	}
+	if data, readErr := os.ReadFile(want); readErr != nil || string(data) != "pkcs12" {
+		t.Fatalf("PKCS#12 导出文件错误：data=%q err=%v", data, readErr)
 	}
 }
 
