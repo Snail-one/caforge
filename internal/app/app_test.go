@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"caforge/internal/certificate"
 	"caforge/internal/domain"
 	"caforge/internal/store"
 	"caforge/internal/ui"
@@ -59,7 +60,10 @@ func TestScriptedMenuCreatesRootAndExits(t *testing.T) {
 	}
 }
 
-type exportCertificateService struct{ data []byte }
+type exportCertificateService struct {
+	data      []byte
+	materials certificate.DeploymentMaterials
+}
 
 func (s exportCertificateService) Issue(domain.IssueRequest, []byte) (domain.Certificate, error) {
 	return domain.Certificate{}, nil
@@ -78,6 +82,9 @@ func (s exportCertificateService) Export(string, string, domain.ExportFormat, []
 	return s.data, nil
 }
 func (s exportCertificateService) CertificateChain(string, string) ([]byte, error) { return nil, nil }
+func (s exportCertificateService) DeploymentMaterials(string, string) (certificate.DeploymentMaterials, error) {
+	return s.materials, nil
+}
 
 func TestExportDisplaysAbsolutePath(t *testing.T) {
 	workingDir := t.TempDir()
@@ -223,6 +230,66 @@ func TestCertificateUsageExplainsCSRClientKeyOwnership(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("客户端使用说明缺少 %q：\n%s", want, got)
 		}
+	}
+}
+
+func TestCopyableServerFilesShowEveryDeploymentMaterial(t *testing.T) {
+	materials := certificate.DeploymentMaterials{
+		CertificatePEM:       []byte("-----BEGIN CERTIFICATE-----\nSERVER\n-----END CERTIFICATE-----\n"),
+		PrivateKeyPEM:        []byte("-----BEGIN PRIVATE KEY-----\nSECRET\n-----END PRIVATE KEY-----\n"),
+		FullChainPEM:         []byte("SERVER-FULLCHAIN\n"),
+		CompleteChainPEM:     []byte("COMPLETE-CHAIN\n"),
+		IntermediateChainPEM: []byte("INTERMEDIATE-CA\n"),
+		RootCAPEM:            []byte("ROOT-CA\n"),
+	}
+	var out bytes.Buffer
+	a := &App{
+		ui:           ui.New(strings.NewReader("y\n"), &out, false, nil),
+		certificates: exportCertificateService{materials: materials},
+	}
+	meta := domain.Certificate{Serial: "1000", CommonName: "server.test", Profile: domain.Server, HasKey: true}
+	if err := a.showCopyableCertificateFiles("ca", "1000", meta); err != nil {
+		t.Fatal(err)
+	}
+
+	got := out.String()
+	for _, want := range []string{
+		"包含私钥", "server.cert.pem", "server.key.pem", "server.fullchain.pem",
+		"intermediate-ca.pem", "complete-chain.pem", "root-ca.pem",
+		"客户端安装证书 CA", "Nginx ssl_certificate", "0600",
+		"SERVER", "SECRET", "SERVER-FULLCHAIN", "INTERMEDIATE-CA", "COMPLETE-CHAIN", "ROOT-CA",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("可复制部署文件缺少 %q：\n%s", want, got)
+		}
+	}
+}
+
+func TestCopyableCSRFilesExplainMissingPrivateKey(t *testing.T) {
+	materials := certificate.DeploymentMaterials{
+		CertificatePEM:   []byte("CLIENT-CERT\n"),
+		FullChainPEM:     []byte("CLIENT-CHAIN\n"),
+		CompleteChainPEM: []byte("COMPLETE-CHAIN\n"),
+		RootCAPEM:        []byte("ROOT-CA\n"),
+	}
+	var out bytes.Buffer
+	a := &App{
+		ui:           ui.New(strings.NewReader("y\n"), &out, false, nil),
+		certificates: exportCertificateService{materials: materials},
+	}
+	meta := domain.Certificate{Serial: "1001", CommonName: "client", Profile: domain.Client, HasKey: false}
+	if err := a.showCopyableCertificateFiles("ca", "1001", meta); err != nil {
+		t.Fatal(err)
+	}
+
+	got := out.String()
+	for _, want := range []string{"client.cert.pem", "client.key.pem", "私钥未显示", "外部 CSR", "mTLS 服务器信任的根 CA"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("CSR 可复制文件说明缺少 %q：\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "BEGIN PRIVATE KEY") {
+		t.Fatalf("CSR 记录不应显示私钥：\n%s", got)
 	}
 }
 

@@ -53,6 +53,7 @@ type CertificateService interface {
 	Renew(string, string, int, []byte, []byte, bool) (domain.Certificate, error)
 	Export(string, string, domain.ExportFormat, []byte, []byte) ([]byte, error)
 	CertificateChain(string, string) ([]byte, error)
+	DeploymentMaterials(string, string) (certificate.DeploymentMaterials, error)
 }
 
 type RevocationService interface {
@@ -575,10 +576,14 @@ func (a *App) certificateActions(ca, serial string) error {
 		a.ui.MenuOptionHint("2", "续期", "生成新密钥，保留旧证书")
 		a.ui.MenuOptionHint("3", "导出 PEM", "证书、私钥和完整链")
 		a.ui.MenuOptionHint("4", "导出 PKCS#12", "带口令的完整证书链")
-		if meta.Profile == domain.Server {
-			a.ui.MenuOptionHint("5", "查看服务器部署说明", "服务器所需文件、fullchain 顺序和客户端信任关系")
-		} else {
-			a.ui.MenuOptionHint("5", "查看客户端使用说明", "mTLS 客户端导入和服务器信任配置")
+		a.ui.MenuOptionHint("5", "查看并复制部署文件", "显示证书、私钥、fullchain 和客户端安装的根 CA")
+		switch meta.Profile {
+		case domain.Server:
+			a.ui.MenuOptionHint("6", "查看服务器部署说明", "服务器所需文件、fullchain 顺序和客户端信任关系")
+		case domain.Client:
+			a.ui.MenuOptionHint("6", "查看客户端使用说明", "mTLS 客户端导入和服务器信任配置")
+		default:
+			a.ui.MenuOptionHint("6", "查看中间 CA 使用说明", "签发链、根 CA 信任关系和私钥保护")
 		}
 		a.ui.MenuExit("0/q", "返回")
 		a.ui.Printf("\n")
@@ -602,6 +607,11 @@ func (a *App) certificateActions(ca, serial string) error {
 		case "4":
 			e = a.exportCertificate(ca, serial, domain.ExportPKCS12)
 		case "5":
+			e = a.showCopyableCertificateFiles(ca, serial, meta)
+			if e == nil {
+				a.ui.Pause()
+			}
+		case "6":
 			a.showCertificateUsage(meta)
 			a.ui.Pause()
 		case "0", "q", "exit":
@@ -617,8 +627,117 @@ func (a *App) certificateActions(ca, serial string) error {
 	}
 }
 
+func (a *App) showCopyableCertificateFiles(ca, serial string, meta domain.Certificate) error {
+	materials, err := a.certificates.DeploymentMaterials(ca, serial)
+	if err != nil {
+		return err
+	}
+
+	a.ui.Printf("\n")
+	warningFields := []ui.CardField{
+		{Label: "终端记录", Value: "以下 PEM 内容会保留在终端滚动记录中"},
+		{Label: "操作环境", Value: "仅在自己的受控终端查看；不要粘贴到聊天、工单或公开日志"},
+	}
+	if len(materials.PrivateKeyPEM) > 0 {
+		warningFields = append(warningFields, ui.CardField{Label: "敏感内容", Value: a.ui.LabelBadge("包含私钥", false), Detail: "任何取得私钥的人都可能冒充该服务器或客户端"})
+	} else {
+		warningFields = append(warningFields, ui.CardField{Label: "私钥", Value: "此记录不保存私钥，只显示公开证书"})
+	}
+	a.ui.PrintDangerCard("显示可复制部署文件前请确认", warningFields...)
+	ok, err := a.ui.Confirm("确认在终端显示这些内容？")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errCancelled
+	}
+
+	identityName, keyName := "certificate.cert.pem", "certificate.key.pem"
+	identityTitle, identityPurpose := "身份认证证书", "提供给使用该身份的程序，与对应私钥配套使用"
+	fullChainName, fullChainPurpose := "certificate.fullchain.pem", "当前证书 + 中间 CA，不含根 CA"
+	switch meta.Profile {
+	case domain.Server:
+		identityName, keyName = "server.cert.pem", "server.key.pem"
+		identityTitle = "服务器证书"
+		identityPurpose = "部署到服务器，证明服务器身份；必须与 server.key.pem 配套"
+		fullChainName = "server.fullchain.pem"
+		fullChainPurpose = "服务器证书 + 中间 CA，不含根 CA；用于 Nginx ssl_certificate 等完整链配置"
+	case domain.Client:
+		identityName, keyName = "client.cert.pem", "client.key.pem"
+		identityTitle = "客户端证书"
+		identityPurpose = "部署到 mTLS 客户端，证明客户端身份；必须与 client.key.pem 配套"
+		fullChainName = "client.fullchain.pem"
+		fullChainPurpose = "客户端证书 + 中间 CA，不含根 CA；供要求发送客户端完整链的程序使用"
+	case domain.Intermediate:
+		identityName, keyName = "intermediate-ca.cert.pem", "intermediate-ca.key.pem"
+		identityTitle = "中间 CA 证书"
+		identityPurpose = "公开的中间 CA 证书，用于构建从终端证书到根 CA 的信任链"
+		fullChainName = "intermediate-ca.chain.pem"
+		fullChainPurpose = "中间 CA 链，不含根 CA；供需要中间证书链的程序使用"
+	}
+
+	a.printCopyablePEM("[1] "+identityTitle, identityName, identityPurpose, materials.CertificatePEM)
+
+	if len(materials.PrivateKeyPEM) > 0 && meta.Profile != domain.Intermediate {
+		keyState := "明文私钥"
+		if materials.PrivateKeyEncrypted {
+			keyState = "口令加密私钥"
+		}
+		a.printCopyablePEM("[2] 私钥（敏感）", keyName, keyState+"；只部署到对应服务器、客户端或服务，文件权限应为 0600", materials.PrivateKeyPEM)
+	} else {
+		detail := "该证书由外部 CSR 签发；CAForge 没有私钥。请从生成 CSR 的服务器或客户端取得原始私钥，证书必须与它配套使用。"
+		if meta.Profile == domain.Intermediate {
+			detail = "CA 私钥不会在证书管理界面显示。请只在 CAForge 的受控 CA 数据目录中使用和保护它。"
+		}
+		a.ui.Printf("\n")
+		a.ui.PrintWarningCard("[2] 私钥未显示",
+			ui.CardField{Label: "建议文件名", Value: keyName},
+			ui.CardField{Label: "说明", Value: detail},
+		)
+	}
+
+	a.printCopyablePEM("[3] 部署用完整链", fullChainName, fullChainPurpose, materials.FullChainPEM)
+	if len(materials.IntermediateChainPEM) > 0 {
+		a.printCopyablePEM("[4] 中间 CA 证书链", "intermediate-ca.pem", "公开证书；服务器随身份认证证书发送，客户端通常不单独安装为信任锚", materials.IntermediateChainPEM)
+	} else {
+		a.ui.Printf("\n")
+		a.ui.PrintInfoCard("[4] 中间 CA 证书链",
+			ui.CardField{Label: "状态", Value: "无"},
+			ui.CardField{Label: "说明", Value: "当前证书由根 CA 直接签发，因此没有中间 CA 文件"},
+		)
+	}
+	a.printCopyablePEM("[5] 完整公开信任链", "complete-chain.pem", "当前证书 → 中间 CA → 根 CA；适合检查、归档或传输，通常不直接用于服务器 ssl_certificate", materials.CompleteChainPEM)
+
+	rootPurpose := "客户端安装证书 CA：复制到访问服务器的客户端，并导入系统或应用信任库"
+	if meta.Profile == domain.Client {
+		rootPurpose = "mTLS 服务器信任的根 CA：服务器用它验证该客户端证书，不要把客户端私钥交给服务器"
+	} else if meta.Profile == domain.Intermediate {
+		rootPurpose = "根 CA 信任锚：导入信任库后，可验证该中间 CA 签发的终端证书"
+	}
+	a.printCopyablePEM("[6] 根 CA 证书（信任锚）", "root-ca.pem", rootPurpose, materials.RootCAPEM)
+
+	a.ui.Printf("\n")
+	a.ui.PrintWarningCard("复制后的文件权限",
+		ui.CardField{Label: "私钥", Value: "0600，仅所属服务账户可读"},
+		ui.CardField{Label: "公开证书", Value: "0644；可公开分发，但应防止被意外替换"},
+		ui.CardField{Label: "注意", Value: "复制 PEM 时必须保留 BEGIN/END 行及其间全部内容"},
+	)
+	return nil
+}
+
+func (a *App) printCopyablePEM(title, filename, purpose string, contents []byte) {
+	a.ui.Printf("\n")
+	a.ui.MenuSection(title)
+	a.ui.PrintInfoCard("对应文件",
+		ui.CardField{Label: "建议文件名", Value: filename},
+		ui.CardField{Label: "用途", Value: purpose},
+	)
+	a.ui.Printf("\n%s", contents)
+}
+
 func (a *App) showCertificateUsage(certificate domain.Certificate) {
-	if certificate.Profile == domain.Server {
+	switch certificate.Profile {
+	case domain.Server:
 		privateKey := "服务器证书对应的私钥；必须单独保存并限制为 0600"
 		if !certificate.HasKey {
 			privateKey = "CSR 签发记录不保存私钥；请使用生成 CSR 时保留的原始私钥"
@@ -641,19 +760,26 @@ func (a *App) showCertificateUsage(certificate domain.Certificate) {
 			ui.CardField{Label: "主机名验证", Value: "客户端访问地址必须匹配证书的 DNS 或 IP SAN"},
 		)
 		return
+	case domain.Client:
+		privateKey := "随 CAForge 生成的客户端私钥一起使用"
+		if !certificate.HasKey {
+			privateKey = "使用生成 CSR 时保留的原始客户端私钥"
+		}
+		a.ui.Printf("\n")
+		a.ui.PrintInfoCard("客户端证书使用方式",
+			ui.CardField{Label: "客户端证书", Value: certificate.CommonName + "（序列号 " + certificate.Serial + "）"},
+			ui.CardField{Label: "客户端私钥", Value: privateKey, Detail: "只保存在对应用户、设备或服务上"},
+			ui.CardField{Label: "推荐导入", Value: "使用带强口令的 PKCS#12 导入浏览器、系统或应用"},
+			ui.CardField{Label: "服务器配置", Value: "启用 mTLS，并信任签发此证书的根 CA"},
+		)
+	case domain.Intermediate:
+		a.ui.Printf("\n")
+		a.ui.PrintInfoCard("中间 CA 使用方式",
+			ui.CardField{Label: "中间 CA 证书", Value: certificate.CommonName + "（序列号 " + certificate.Serial + "）", Detail: "随终端证书提供，帮助验证方构建信任链"},
+			ui.CardField{Label: "根 CA 证书", Value: "安装到验证方的信任库，作为最终信任锚"},
+			ui.CardField{Label: "CA 私钥", Value: a.ui.LabelBadge("不得复制到业务服务器", false), Detail: "只应保存在 CAForge 的受控 CA 环境中，用于签发和吊销"},
+		)
 	}
-
-	privateKey := "随 CAForge 生成的客户端私钥一起使用"
-	if !certificate.HasKey {
-		privateKey = "使用生成 CSR 时保留的原始客户端私钥"
-	}
-	a.ui.Printf("\n")
-	a.ui.PrintInfoCard("客户端证书使用方式",
-		ui.CardField{Label: "客户端证书", Value: certificate.CommonName + "（序列号 " + certificate.Serial + "）"},
-		ui.CardField{Label: "客户端私钥", Value: privateKey, Detail: "只保存在对应用户、设备或服务上"},
-		ui.CardField{Label: "推荐导入", Value: "使用带强口令的 PKCS#12 导入浏览器、系统或应用"},
-		ui.CardField{Label: "服务器配置", Value: "启用 mTLS，并信任签发此证书的根 CA"},
-	)
 }
 
 func (a *App) showCertificateChain(chain []byte) error {

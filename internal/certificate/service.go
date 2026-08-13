@@ -19,6 +19,16 @@ import (
 
 type AuthorityService interface{ Usable(string) error }
 
+type DeploymentMaterials struct {
+	CertificatePEM       []byte
+	PrivateKeyPEM        []byte
+	FullChainPEM         []byte
+	CompleteChainPEM     []byte
+	IntermediateChainPEM []byte
+	RootCAPEM            []byte
+	PrivateKeyEncrypted  bool
+}
+
 type Service struct {
 	repo        store.Repository
 	authorities AuthorityService
@@ -207,6 +217,79 @@ func (s *Service) Get(caID, serial string) (domain.Certificate, *x509.Certificat
 func (s *Service) CertificateChain(caID, serial string) ([]byte, error) {
 	_, _, _, chain, err := s.repo.LoadCertificate(caID, serial)
 	return chain, err
+}
+
+func (s *Service) DeploymentMaterials(caID, serial string) (DeploymentMaterials, error) {
+	var materials DeploymentMaterials
+	_, certificatePEM, privateKeyPEM, chainPEM, err := s.repo.LoadCertificate(caID, serial)
+	if err != nil {
+		return materials, err
+	}
+	certificates, blocks, err := parseCertificateBlocks(chainPEM)
+	if err != nil {
+		return materials, err
+	}
+	if len(certificates) < 2 {
+		return materials, errors.New("证书链缺少根 CA")
+	}
+	leaf, err := pki.ParseCertificate(certificatePEM)
+	if err != nil {
+		return materials, err
+	}
+	if !bytes.Equal(certificates[0].Raw, leaf.Raw) {
+		return materials, errors.New("证书链首项不是当前证书")
+	}
+	for index := 0; index < len(certificates)-1; index++ {
+		if err = certificates[index].CheckSignatureFrom(certificates[index+1]); err != nil {
+			return materials, fmt.Errorf("证书链第 %d 项无法由第 %d 项验证: %w", index+1, index+2, err)
+		}
+	}
+	root := certificates[len(certificates)-1]
+	if root.Subject.String() != root.Issuer.String() || root.CheckSignatureFrom(root) != nil {
+		return materials, errors.New("证书链末项不是有效的自签名根 CA")
+	}
+
+	materials.CertificatePEM = append([]byte(nil), blocks[0]...)
+	materials.CompleteChainPEM = bytes.Join(blocks, nil)
+	materials.FullChainPEM = bytes.Join(blocks[:len(blocks)-1], nil)
+	materials.RootCAPEM = append([]byte(nil), blocks[len(blocks)-1]...)
+	if len(blocks) > 2 {
+		materials.IntermediateChainPEM = bytes.Join(blocks[1:len(blocks)-1], nil)
+	}
+	if len(privateKeyPEM) > 0 {
+		keyBlock, rest := pem.Decode(privateKeyPEM)
+		if keyBlock == nil || len(bytes.TrimSpace(rest)) != 0 {
+			return materials, errors.New("保存的私钥 PEM 损坏")
+		}
+		if keyBlock.Type != "PRIVATE KEY" && keyBlock.Type != "ENCRYPTED PRIVATE KEY" {
+			return materials, fmt.Errorf("不支持的私钥 PEM 类型 %q", keyBlock.Type)
+		}
+		materials.PrivateKeyPEM = pem.EncodeToMemory(keyBlock)
+		materials.PrivateKeyEncrypted = keyBlock.Type == "ENCRYPTED PRIVATE KEY"
+	}
+	return materials, nil
+}
+
+func parseCertificateBlocks(data []byte) ([]*x509.Certificate, [][]byte, error) {
+	var certificates []*x509.Certificate
+	var blocks [][]byte
+	for len(bytes.TrimSpace(data)) > 0 {
+		block, rest := pem.Decode(data)
+		if block == nil {
+			return nil, nil, errors.New("证书链 PEM 损坏")
+		}
+		data = rest
+		if block.Type != "CERTIFICATE" {
+			return nil, nil, fmt.Errorf("证书链包含非证书 PEM 块 %q", block.Type)
+		}
+		certificate, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, nil, err
+		}
+		certificates = append(certificates, certificate)
+		blocks = append(blocks, pem.EncodeToMemory(block))
+	}
+	return certificates, blocks, nil
 }
 func (s *Service) Renew(caID, serial string, days int, caPassword, keyPassword []byte, encrypt bool) (domain.Certificate, error) {
 	old, _, _, e := s.Get(caID, serial)

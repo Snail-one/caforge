@@ -1,6 +1,7 @@
 package certificate_test
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -47,6 +48,27 @@ func TestEndToEndAndOpenSSLCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	materials, err := certs.DeploymentMaterials(intermediate.ID, server.Serial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for label, item := range map[string]struct {
+		data []byte
+		want int
+	}{
+		"certificate":  {materials.CertificatePEM, 1},
+		"fullchain":    {materials.FullChainPEM, 2},
+		"complete":     {materials.CompleteChainPEM, 3},
+		"intermediate": {materials.IntermediateChainPEM, 1},
+		"root":         {materials.RootCAPEM, 1},
+	} {
+		if got := bytes.Count(item.data, []byte("-----BEGIN CERTIFICATE-----")); got != item.want {
+			t.Fatalf("%s certificate count=%d, want %d", label, got, item.want)
+		}
+	}
+	if !bytes.Contains(materials.PrivateKeyPEM, []byte("-----BEGIN PRIVATE KEY-----")) || materials.PrivateKeyEncrypted {
+		t.Fatalf("unexpected server private key: encrypted=%v data=%q", materials.PrivateKeyEncrypted, materials.PrivateKeyPEM)
+	}
 	client, err := certs.Issue(domain.IssueRequest{CAID: intermediate.ID, CommonName: "client", Profile: domain.Client, Algorithm: domain.ECDSAP256, Days: 397, EncryptKey: false}, intPW)
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +91,13 @@ func TestEndToEndAndOpenSSLCompatibility(t *testing.T) {
 	}
 	if csrCert.HasKey {
 		t.Fatal("CSR certificate unexpectedly owns key")
+	}
+	csrMaterials, err := certs.DeploymentMaterials(intermediate.ID, csrCert.Serial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(csrMaterials.PrivateKeyPEM) != 0 {
+		t.Fatal("CSR deployment materials unexpectedly contain a private key")
 	}
 	if err = revocations.Revoke(intermediate.ID, server.Serial, domain.KeyCompromise, intPW); err != nil {
 		t.Fatal(err)
