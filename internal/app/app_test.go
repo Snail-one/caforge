@@ -192,6 +192,40 @@ func TestCertificateChainDisplayExplainsRolesAndContainsNoKey(t *testing.T) {
 	}
 }
 
+func TestCertificateUsageExplainsServerDeployment(t *testing.T) {
+	var out bytes.Buffer
+	a := &App{ui: ui.New(strings.NewReader(""), &out, false, nil)}
+	a.showCertificateUsage(domain.Certificate{
+		Serial: "1000", CommonName: "server.test", Profile: domain.Server, HasKey: true,
+	})
+
+	got := out.String()
+	for _, want := range []string{
+		"服务器部署所需文件", "server.fullchain.pem", "服务器证书 → 中间 CA 证书",
+		"根 CA 通常不放入服务器 fullchain", "server.key.pem", "客户端信任库",
+		"安装根 CA 证书", "不应直接作为 Nginx ssl_certificate",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("服务器部署说明缺少 %q：\n%s", want, got)
+		}
+	}
+}
+
+func TestCertificateUsageExplainsCSRClientKeyOwnership(t *testing.T) {
+	var out bytes.Buffer
+	a := &App{ui: ui.New(strings.NewReader(""), &out, false, nil)}
+	a.showCertificateUsage(domain.Certificate{
+		Serial: "1001", CommonName: "client", Profile: domain.Client, HasKey: false,
+	})
+
+	got := out.String()
+	for _, want := range []string{"客户端证书使用方式", "生成 CSR 时保留的原始客户端私钥", "PKCS#12", "启用 mTLS"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("客户端使用说明缺少 %q：\n%s", want, got)
+		}
+	}
+}
+
 func TestFormInputsRetryInPlace(t *testing.T) {
 	// Empty required value, invalid/out-of-range index, invalid days, then valid values.
 	var out bytes.Buffer

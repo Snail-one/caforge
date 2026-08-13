@@ -575,6 +575,11 @@ func (a *App) certificateActions(ca, serial string) error {
 		a.ui.MenuOptionHint("2", "续期", "生成新密钥，保留旧证书")
 		a.ui.MenuOptionHint("3", "导出 PEM", "证书、私钥和完整链")
 		a.ui.MenuOptionHint("4", "导出 PKCS#12", "带口令的完整证书链")
+		if meta.Profile == domain.Server {
+			a.ui.MenuOptionHint("5", "查看服务器部署说明", "服务器所需文件、fullchain 顺序和客户端信任关系")
+		} else {
+			a.ui.MenuOptionHint("5", "查看客户端使用说明", "mTLS 客户端导入和服务器信任配置")
+		}
 		a.ui.MenuExit("0/q", "返回")
 		a.ui.Printf("\n")
 		v, e := a.ui.Ask("请选择: ")
@@ -596,6 +601,9 @@ func (a *App) certificateActions(ca, serial string) error {
 			e = a.exportCertificate(ca, serial, domain.ExportPEM)
 		case "4":
 			e = a.exportCertificate(ca, serial, domain.ExportPKCS12)
+		case "5":
+			a.showCertificateUsage(meta)
+			a.ui.Pause()
 		case "0", "q", "exit":
 			return nil
 		default:
@@ -607,6 +615,45 @@ func (a *App) certificateActions(ca, serial string) error {
 		}
 		e = nil
 	}
+}
+
+func (a *App) showCertificateUsage(certificate domain.Certificate) {
+	if certificate.Profile == domain.Server {
+		privateKey := "服务器证书对应的私钥；必须单独保存并限制为 0600"
+		if !certificate.HasKey {
+			privateKey = "CSR 签发记录不保存私钥；请使用生成 CSR 时保留的原始私钥"
+		}
+		a.ui.Printf("\n")
+		a.ui.PrintInfoCard("服务器部署所需文件",
+			ui.CardField{Label: "服务器证书", Value: certificate.CommonName + "（序列号 " + certificate.Serial + "）", Detail: "证明服务器身份"},
+			ui.CardField{Label: "服务器私钥", Value: privateKey},
+			ui.CardField{Label: "中间 CA", Value: "随服务器证书发送，帮助客户端构建信任链"},
+		)
+		a.ui.Printf("\n")
+		a.ui.PrintInfoCard("推荐文件结构",
+			ui.CardField{Label: "server.fullchain.pem", Value: "服务器证书 → 中间 CA 证书", Detail: "根 CA 通常不放入服务器 fullchain"},
+			ui.CardField{Label: "server.key.pem", Value: "仅包含服务器私钥", Detail: "不得公开、提交到代码仓库或发送给客户端"},
+			ui.CardField{Label: "客户端信任库", Value: "安装根 CA 证书", Detail: "根 CA 是信任锚，不是服务器身份文件"},
+		)
+		a.ui.Printf("\n")
+		a.ui.PrintWarningCard("部署注意",
+			ui.CardField{Label: "PEM 导出", Value: "组合导出包含证书、私钥和完整链，不应直接作为 Nginx ssl_certificate"},
+			ui.CardField{Label: "主机名验证", Value: "客户端访问地址必须匹配证书的 DNS 或 IP SAN"},
+		)
+		return
+	}
+
+	privateKey := "随 CAForge 生成的客户端私钥一起使用"
+	if !certificate.HasKey {
+		privateKey = "使用生成 CSR 时保留的原始客户端私钥"
+	}
+	a.ui.Printf("\n")
+	a.ui.PrintInfoCard("客户端证书使用方式",
+		ui.CardField{Label: "客户端证书", Value: certificate.CommonName + "（序列号 " + certificate.Serial + "）"},
+		ui.CardField{Label: "客户端私钥", Value: privateKey, Detail: "只保存在对应用户、设备或服务上"},
+		ui.CardField{Label: "推荐导入", Value: "使用带强口令的 PKCS#12 导入浏览器、系统或应用"},
+		ui.CardField{Label: "服务器配置", Value: "启用 mTLS，并信任签发此证书的根 CA"},
+	)
 }
 
 func (a *App) showCertificateChain(chain []byte) error {
