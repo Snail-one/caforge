@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -138,10 +139,19 @@ func (r currentCARepository) CurrentCA() (string, error) { return r.current, nil
 
 type authorityListService struct {
 	AuthorityService
-	items []domain.Authority
+	items       []domain.Authority
+	certificate *x509.Certificate
 }
 
 func (s authorityListService) List() ([]domain.Authority, error) { return s.items, nil }
+func (s authorityListService) Get(id string) (domain.Authority, *x509.Certificate, error) {
+	for _, item := range s.items {
+		if item.ID == id {
+			return item, s.certificate, nil
+		}
+	}
+	return domain.Authority{}, nil, errors.New("authority not found")
+}
 
 func TestChooseAuthorityDisplaysAndMarksCurrentCA(t *testing.T) {
 	items := []domain.Authority{
@@ -166,6 +176,57 @@ func TestChooseAuthorityDisplaysAndMarksCurrentCA(t *testing.T) {
 	for _, want := range []string{"当前选择", "名称：joker-one", "CA ID：joker-one-3ac2f408", "[当前]", "joker-one-3ac2f408"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("CA 选择界面缺少 %q：\n%s", want, got)
+		}
+	}
+}
+
+func TestAuthorityListShowsWhichRootIssuedIntermediate(t *testing.T) {
+	now := time.Now()
+	items := []domain.Authority{
+		{ID: "joker-536f4a6c", Name: "joker", NotAfter: now.AddDate(10, 0, 0)},
+		{ID: "joker-one-3ac2f408", Name: "joker-one", ParentID: "joker-536f4a6c", NotAfter: now.AddDate(5, 0, 0)},
+	}
+	certificate := &x509.Certificate{
+		SerialNumber: big.NewInt(4096),
+		NotBefore:    now,
+		NotAfter:     now.AddDate(5, 0, 0),
+	}
+	var out bytes.Buffer
+	a := &App{
+		ui:          ui.New(strings.NewReader("2\n\n"), &out, false, nil),
+		authorities: authorityListService{items: items, certificate: certificate},
+	}
+	if err := a.showAuthorities(); err != nil {
+		t.Fatal(err)
+	}
+
+	got := out.String()
+	for _, want := range []string{
+		"joker-536f4a6c · 自签名",
+		"└─ 2", "joker-one", "[中间 CA]", "joker-one-3ac2f408",
+		"证书链层级：joker（根 CA） → joker-one（中间 CA）",
+		"父 CA：joker（joker-536f4a6c）",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("CA 层级显示缺少 %q：\n%s", want, got)
+		}
+	}
+}
+
+func TestIssueMenuContainsSigningCASelection(t *testing.T) {
+	var out bytes.Buffer
+	a := &App{
+		ui:   ui.New(strings.NewReader("0\n"), &out, false, nil),
+		repo: currentCARepository{},
+	}
+	if err := a.issueMenu(); err != nil {
+		t.Fatal(err)
+	}
+
+	got := out.String()
+	for _, want := range []string{"当前签发机构", "[未选择]", "选择签发 CA", "先选择签发 CA", "生成密钥并签发", "导入 PEM CSR 签发"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("证书签发菜单缺少 %q：\n%s", want, got)
 		}
 	}
 }

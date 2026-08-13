@@ -60,6 +60,20 @@ func TestTargetPaletteAndMenuAlignment(t *testing.T) {
 	}
 }
 
+func TestChildMenuOptionUsesTreeBranch(t *testing.T) {
+	var out bytes.Buffer
+	term := New(strings.NewReader(""), &out, false, nil)
+	term.MenuChildOptionStatusHint("2", "issuing-ca", "[中间 CA]", "issuing-id", false)
+	term.MenuChildOptionStatusHint("3", "backup-ca", "[中间 CA]", "backup-id", true)
+
+	got := out.String()
+	for _, want := range []string{"├─ 2", "issuing-ca", "└─ 3", "backup-ca"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("CA 树形菜单缺少 %q：\n%s", want, got)
+		}
+	}
+}
+
 func TestCardsAndPromptFollowTargetStyle(t *testing.T) {
 	var out bytes.Buffer
 	term := New(strings.NewReader("yes\n"), &out, true, nil)

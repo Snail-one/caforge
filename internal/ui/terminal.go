@@ -143,6 +143,15 @@ func (t *Terminal) MenuOptionStatusHint(key, label, status, hint string) {
 	fmt.Fprintf(t.out, "  %s %s%s%s\n", t.menuKey(key, bold+blue), t.padDisplay(label, 18), t.padDisplay(status, 16), t.paint(gray, "-- "+hint))
 }
 
+func (t *Terminal) MenuChildOptionStatusHint(key, label, status, hint string, last bool) {
+	branch := "├─"
+	if last {
+		branch = "└─"
+	}
+	status, hint = strings.TrimSpace(status), strings.TrimSpace(hint)
+	fmt.Fprintf(t.out, "     %s %s %s%s%s\n", t.paint(gray, branch), t.menuKey(key, bold+blue), t.padDisplay(label, 12), t.padDisplay(status, 16), t.paint(gray, "-- "+hint))
+}
+
 func (t *Terminal) MenuExit(key, label string) {
 	fmt.Fprintf(t.out, "  %s %s\n", t.menuKey(key, bold+yellow), t.paint(dim, label))
 }
