@@ -28,6 +28,8 @@ type App struct {
 	revocations  RevocationService
 }
 
+var errCancelled = errors.New("已取消")
+
 type Repository interface {
 	Init() error
 	CurrentCA() (string, error)
@@ -70,15 +72,23 @@ func (a *App) Run() error {
 	for {
 		current, _ := a.repo.CurrentCA()
 		a.ui.HomeHeader(version.Version)
-		if current == "" {
-			a.ui.Printf("当前 CA：未选择\n\n")
-		} else {
+		authorities, _ := a.authorities.List()
+		currentBadge := a.ui.LabelBadge("未选择", false)
+		certificateBadge := a.ui.LabelBadge("不可用", false)
+		if current != "" {
 			meta, e := a.repo.LoadAuthority(current)
 			if e == nil {
-				a.ui.Printf("当前 CA：%s (%s)\n\n", meta.Name, meta.ID)
+				currentBadge = a.ui.LabelBadge(meta.Name, true)
+				certificates, _ := a.certificates.List(current)
+				certificateBadge = a.ui.LabelBadge(fmt.Sprintf("%d 张", len(certificates)), len(certificates) > 0)
 			}
 		}
-		a.ui.Printf("1. CA 管理\n2. 证书签发\n3. 证书管理\n4. 吊销与 CRL\n\n0/q. 退出\n")
+		a.ui.MenuOptionStatus("1", "CA 管理", a.ui.LabelBadge(fmt.Sprintf("%d 个", len(authorities)), len(authorities) > 0))
+		a.ui.MenuOptionStatus("2", "证书签发", currentBadge)
+		a.ui.MenuOptionStatus("3", "证书管理", certificateBadge)
+		a.ui.MenuOptionStatus("4", "吊销与 CRL", currentBadge)
+		a.ui.MenuExit("0/q", "退出")
+		a.ui.Printf("\n")
 		choice, e := a.ui.Ask("请选择: ")
 		if e != nil {
 			if errors.Is(e, io.EOF) {
@@ -86,6 +96,7 @@ func (a *App) Run() error {
 			}
 			return e
 		}
+		a.ui.Printf("\n")
 		switch strings.ToLower(choice) {
 		case "1":
 			e = a.caMenu()
@@ -95,16 +106,19 @@ func (a *App) Run() error {
 			e = a.certificateMenu()
 		case "4":
 			e = a.revocationMenu()
-		case "0", "q":
+		case "0", "q", "exit":
+			a.ui.Info("已退出")
 			return nil
 		default:
-			a.ui.Warning("无效选项")
+			a.ui.InvalidChoice()
+			a.ui.Pause()
 		}
 		if e != nil {
 			if errors.Is(e, io.EOF) {
 				return nil
 			}
 			a.ui.Error(e)
+			a.ui.Pause()
 		}
 	}
 }
@@ -112,7 +126,12 @@ func (a *App) Run() error {
 func (a *App) caMenu() error {
 	for {
 		a.ui.Header("主菜单 / CA 管理")
-		a.ui.Printf("1. 创建根 CA\n2. 创建中间 CA\n3. CA 列表与详情\n4. 选择当前 CA\n\n0/q. 返回\n")
+		a.ui.MenuOptionHint("1", "创建根 CA", "自签名信任锚")
+		a.ui.MenuOptionHint("2", "创建中间 CA", "由根 CA 签发")
+		a.ui.MenuOptionHint("3", "CA 列表与详情", "查看证书和层级")
+		a.ui.MenuOptionHint("4", "选择当前 CA", "用于后续签发和吊销")
+		a.ui.MenuExit("0/q", "返回")
+		a.ui.Printf("\n")
 		v, e := a.ui.Ask("请选择: ")
 		if e != nil {
 			return e
@@ -126,14 +145,17 @@ func (a *App) caMenu() error {
 			e = a.showAuthorities()
 		case "4":
 			e = a.selectAuthority()
-		case "0", "q":
+		case "0", "q", "exit":
 			return nil
 		default:
-			a.ui.Warning("无效选项")
+			a.ui.InvalidChoice()
+			a.ui.Pause()
 		}
-		if e != nil {
+		if e != nil && !errors.Is(e, errCancelled) {
 			a.ui.Error(e)
+			a.ui.Pause()
 		}
+		e = nil
 	}
 }
 func (a *App) createRoot() error {
@@ -156,7 +178,12 @@ func (a *App) createRoot() error {
 	}
 	result, e := a.authorities.CreateRoot(authority.CreateRootRequest{Name: name, Algorithm: alg, Days: days, MaxPathLen: 1, Password: pw})
 	if e == nil {
-		a.ui.Success(fmt.Sprintf("根 CA 已创建：%s (%s)", result.Name, result.ID))
+		a.ui.PrintSuccessCard("根 CA 创建完成",
+			ui.CardField{Label: "名称", Value: result.Name},
+			ui.CardField{Label: "CA ID", Value: result.ID},
+			ui.CardField{Label: "算法", Value: string(result.Algorithm)},
+		)
+		a.ui.Pause()
 	}
 	return e
 }
@@ -195,7 +222,12 @@ func (a *App) createIntermediate() error {
 	}
 	result, e := a.authorities.CreateIntermediate(authority.CreateIntermediateRequest{ParentID: parent, Name: name, Algorithm: alg, Days: days, ParentPassword: parentPW, Password: pw})
 	if e == nil {
-		a.ui.Success(fmt.Sprintf("中间 CA 已创建并设为当前：%s (%s)", result.Name, result.ID))
+		a.ui.PrintSuccessCard("中间 CA 创建完成",
+			ui.CardField{Label: "名称", Value: result.Name},
+			ui.CardField{Label: "CA ID", Value: result.ID},
+			ui.CardField{Label: "父 CA", Value: result.ParentID},
+		)
+		a.ui.Pause()
 	}
 	return e
 }
@@ -207,6 +239,7 @@ func (a *App) showAuthorities() error {
 	}
 	if len(items) == 0 {
 		a.ui.Warning("尚未创建 CA")
+		a.ui.Pause()
 		return nil
 	}
 	for i, v := range items {
@@ -214,8 +247,10 @@ func (a *App) showAuthorities() error {
 		if !v.IsRoot() {
 			kind = "中间 CA"
 		}
-		a.ui.Printf("%d. %s [%s]  %s  到期 %s\n", i+1, v.Name, kind, v.ID, v.NotAfter.Local().Format("2006-01-02"))
+		a.ui.MenuOptionStatusHint(strconv.Itoa(i+1), v.Name, a.ui.LabelBadge(kind, true), v.ID+" · 到期 "+v.NotAfter.Local().Format("2006-01-02"))
 	}
+	a.ui.MenuExit("0/q", "返回")
+	a.ui.Printf("\n")
 	sel, e := a.ui.Ask("输入编号查看详情，0 返回: ")
 	if e != nil || ui.IsBack(sel) {
 		return e
@@ -228,9 +263,18 @@ func (a *App) showAuthorities() error {
 	if e != nil {
 		return e
 	}
-	a.ui.Printf("\nID: %s\n名称: %s\n父 CA: %s\n算法: %s\n序列号: %s\n有效期: %s — %s\n路径长度: %d\n", v.ID, v.Name, emptyAs(v.ParentID, "无（自签名）"), v.Algorithm, c.SerialNumber.Text(16), c.NotBefore.Local().Format(time.RFC3339), c.NotAfter.Local().Format(time.RFC3339), v.MaxPathLen)
-	_, e = a.ui.Ask("按回车返回...")
-	return e
+	a.ui.Printf("\n")
+	a.ui.PrintInfoCard("CA 详情",
+		ui.CardField{Label: "ID", Value: v.ID},
+		ui.CardField{Label: "名称", Value: v.Name},
+		ui.CardField{Label: "父 CA", Value: emptyAs(v.ParentID, "无（自签名）")},
+		ui.CardField{Label: "算法", Value: string(v.Algorithm)},
+		ui.CardField{Label: "序列号", Value: c.SerialNumber.Text(16)},
+		ui.CardField{Label: "有效期", Value: c.NotBefore.Local().Format(time.RFC3339) + " — " + c.NotAfter.Local().Format(time.RFC3339)},
+		ui.CardField{Label: "路径长度", Value: strconv.Itoa(v.MaxPathLen)},
+	)
+	a.ui.Pause()
+	return nil
 }
 func (a *App) selectAuthority() error {
 	id, e := a.chooseAuthority(false)
@@ -238,7 +282,8 @@ func (a *App) selectAuthority() error {
 		return e
 	}
 	if e = a.authorities.Select(id); e == nil {
-		a.ui.Success("当前 CA 已更新")
+		a.ui.Info("当前 CA 已更新")
+		a.ui.Pause()
 	}
 	return e
 }
@@ -257,8 +302,10 @@ func (a *App) chooseAuthority(rootOnly bool) (string, error) {
 		return "", errors.New("没有可选 CA")
 	}
 	for i, v := range filtered {
-		a.ui.Printf("%d. %s (%s)\n", i+1, v.Name, v.ID)
+		a.ui.MenuOptionHint(strconv.Itoa(i+1), v.Name, v.ID)
 	}
+	a.ui.MenuExit("0/q", "返回")
+	a.ui.Printf("\n")
 	v, e := a.ui.Ask("选择编号 (0 返回): ")
 	if e != nil || ui.IsBack(v) {
 		return "", e
@@ -277,7 +324,13 @@ func (a *App) issueMenu() error {
 	}
 	for {
 		a.ui.Header("主菜单 / 证书签发")
-		a.ui.Printf("当前 CA：%s\n\n1. 生成密钥并签发\n2. 导入 PEM CSR 签发\n\n0/q. 返回\n", ca)
+		meta, _ := a.repo.LoadAuthority(ca)
+		a.ui.PrintInfoCard("当前签发机构", ui.CardField{Label: "名称", Value: meta.Name}, ui.CardField{Label: "CA ID", Value: ca})
+		a.ui.Printf("\n")
+		a.ui.MenuOptionHint("1", "生成密钥并签发", "创建私钥和终端证书")
+		a.ui.MenuOptionHint("2", "导入 PEM CSR 签发", "验证请求后仅签发证书")
+		a.ui.MenuExit("0/q", "返回")
+		a.ui.Printf("\n")
 		v, e := a.ui.Ask("请选择: ")
 		if e != nil {
 			return e
@@ -287,14 +340,17 @@ func (a *App) issueMenu() error {
 			e = a.issueGenerated(ca)
 		case "2":
 			e = a.issueCSR(ca)
-		case "0", "q":
+		case "0", "q", "exit":
 			return nil
 		default:
-			a.ui.Warning("无效选项")
+			a.ui.InvalidChoice()
+			a.ui.Pause()
 		}
-		if e != nil {
+		if e != nil && !errors.Is(e, errCancelled) {
 			a.ui.Error(e)
+			a.ui.Pause()
 		}
+		e = nil
 	}
 }
 func (a *App) issueGenerated(ca string) error {
@@ -342,13 +398,16 @@ func (a *App) issueGenerated(ca string) error {
 			return e
 		}
 	} else {
-		a.ui.Warning("明文私钥一旦泄露无法通过口令保护")
+		a.ui.PrintWarningCard("明文私钥风险",
+			ui.CardField{Label: "保护状态", Value: a.ui.LabelBadge("未加密", false)},
+			ui.CardField{Label: "风险", Value: "文件泄露后无法通过口令阻止使用"},
+		)
 		ok, e := a.ui.Confirm("确认生成明文私钥？")
 		if e != nil {
 			return e
 		}
 		if !ok {
-			return errors.New("已取消")
+			return errCancelled
 		}
 	}
 	caPW, e := a.ui.Password("CA 私钥口令: ")
@@ -357,7 +416,13 @@ func (a *App) issueGenerated(ca string) error {
 	}
 	result, e := a.certificates.Issue(domain.IssueRequest{CAID: ca, CommonName: cn, Profile: profile, Algorithm: alg, DNSNames: dns, IPAddresses: ips, Days: days, EncryptKey: encrypt, KeyPassword: keyPW}, caPW)
 	if e == nil {
-		a.ui.Success("证书已签发，序列号 " + result.Serial)
+		a.ui.PrintSuccessCard("证书签发完成",
+			ui.CardField{Label: "通用名称", Value: result.CommonName},
+			ui.CardField{Label: "序列号", Value: result.Serial},
+			ui.CardField{Label: "模板", Value: string(result.Profile)},
+			ui.CardField{Label: "有效期至", Value: result.NotAfter.Local().Format(time.RFC3339)},
+		)
+		a.ui.Pause()
 	}
 	return e
 }
@@ -389,7 +454,12 @@ func (a *App) issueCSR(ca string) error {
 	}
 	result, e := a.certificates.SignCSR(domain.CSRRequest{CAID: ca, CommonName: name, Profile: profile, CSRPEM: data, Days: days}, pw)
 	if e == nil {
-		a.ui.Success("CSR 已签发，序列号 " + result.Serial)
+		a.ui.PrintSuccessCard("CSR 签发完成",
+			ui.CardField{Label: "通用名称", Value: result.CommonName},
+			ui.CardField{Label: "序列号", Value: result.Serial},
+			ui.CardField{Label: "私钥", Value: a.ui.LabelBadge("不由 CAForge 保存", false)},
+		)
+		a.ui.Pause()
 	}
 	return e
 }
@@ -415,10 +485,12 @@ func (a *App) certificateMenu() error {
 				}
 			}
 			items = matched
-			a.ui.Printf("筛选：%s（输入 f 可修改）\n\n", filter)
+			a.ui.PrintField("筛选", filter+"（输入 f 可修改）")
+			a.ui.Printf("\n")
 		}
 		if len(items) == 0 && filter == "" {
 			a.ui.Warning("当前 CA 尚未签发证书")
+			a.ui.Pause()
 			return nil
 		}
 		if len(items) == 0 {
@@ -426,8 +498,11 @@ func (a *App) certificateMenu() error {
 		}
 		for i, c := range items {
 			_, _, status, _ := a.certificates.Get(ca, c.Serial)
-			a.ui.Printf("%d. %s  %s  [%s] %s\n", i+1, c.Serial, c.CommonName, c.Profile, a.ui.Badge(status))
+			a.ui.MenuOptionStatusHint(strconv.Itoa(i+1), c.CommonName, a.ui.Badge(status), c.Serial+" · "+string(c.Profile))
 		}
+		a.ui.MenuOption("f", "筛选证书")
+		a.ui.MenuExit("0/q", "返回")
+		a.ui.Printf("\n")
 		v, e := a.ui.Ask("选择证书编号，f 筛选，0 返回: ")
 		if e != nil {
 			return e
@@ -444,11 +519,13 @@ func (a *App) certificateMenu() error {
 		}
 		n, e := strconv.Atoi(v)
 		if e != nil || n < 1 || n > len(items) {
-			a.ui.Warning("无效编号")
+			a.ui.InvalidChoice()
+			a.ui.Pause()
 			continue
 		}
 		if e = a.certificateActions(ca, items[n-1].Serial); e != nil {
 			a.ui.Error(e)
+			a.ui.Pause()
 		}
 	}
 }
@@ -459,7 +536,23 @@ func (a *App) certificateActions(ca, serial string) error {
 			return e
 		}
 		a.ui.Header("主菜单 / 证书管理 / " + serial)
-		a.ui.Printf("状态: %s\nCN: %s\n模板: %s\n算法: %s\n有效期: %s — %s\nDNS SAN: %s\nIP SAN: %s\n续期来源: %s\n\n1. 查看证书链\n2. 续期（生成新密钥）\n3. 导出 PEM\n4. 导出 PKCS#12\n\n0/q. 返回\n", a.ui.Badge(status), meta.CommonName, meta.Profile, meta.Algorithm, cert.NotBefore.Local().Format(time.RFC3339), cert.NotAfter.Local().Format(time.RFC3339), strings.Join(meta.DNSNames, ", "), strings.Join(meta.IPAddresses, ", "), emptyAs(meta.RenewedFrom, "无"))
+		a.ui.PrintInfoCard("证书详情",
+			ui.CardField{Label: "状态", Value: a.ui.Badge(status)},
+			ui.CardField{Label: "通用名称", Value: meta.CommonName},
+			ui.CardField{Label: "模板", Value: string(meta.Profile)},
+			ui.CardField{Label: "算法", Value: string(meta.Algorithm)},
+			ui.CardField{Label: "有效期", Value: cert.NotBefore.Local().Format(time.RFC3339) + " — " + cert.NotAfter.Local().Format(time.RFC3339)},
+			ui.CardField{Label: "DNS SAN", Value: emptyAs(strings.Join(meta.DNSNames, ", "), "无")},
+			ui.CardField{Label: "IP SAN", Value: emptyAs(strings.Join(meta.IPAddresses, ", "), "无")},
+			ui.CardField{Label: "续期来源", Value: emptyAs(meta.RenewedFrom, "无")},
+		)
+		a.ui.Printf("\n")
+		a.ui.MenuOptionHint("1", "查看证书链", "PEM 格式")
+		a.ui.MenuOptionHint("2", "续期", "生成新密钥，保留旧证书")
+		a.ui.MenuOptionHint("3", "导出 PEM", "证书、私钥和完整链")
+		a.ui.MenuOptionHint("4", "导出 PKCS#12", "带口令的完整证书链")
+		a.ui.MenuExit("0/q", "返回")
+		a.ui.Printf("\n")
 		v, e := a.ui.Ask("请选择: ")
 		if e != nil {
 			return e
@@ -468,8 +561,9 @@ func (a *App) certificateActions(ca, serial string) error {
 		case "1":
 			chain, e := a.certificates.CertificateChain(ca, serial)
 			if e == nil {
+				a.ui.MenuSection("PEM 证书链")
 				a.ui.Printf("%s\n", chain)
-				_, e = a.ui.Ask("按回车返回...")
+				a.ui.Pause()
 			}
 		case "2":
 			e = a.renew(ca, serial)
@@ -477,14 +571,17 @@ func (a *App) certificateActions(ca, serial string) error {
 			e = a.exportCertificate(ca, serial, domain.ExportPEM)
 		case "4":
 			e = a.exportCertificate(ca, serial, domain.ExportPKCS12)
-		case "0", "q":
+		case "0", "q", "exit":
 			return nil
 		default:
-			a.ui.Warning("无效选项")
+			a.ui.InvalidChoice()
+			a.ui.Pause()
 		}
-		if e != nil {
+		if e != nil && !errors.Is(e, errCancelled) {
 			a.ui.Error(e)
+			a.ui.Pause()
 		}
+		e = nil
 	}
 }
 func (a *App) renew(ca, serial string) error {
@@ -503,7 +600,7 @@ func (a *App) renew(ca, serial string) error {
 			return e
 		}
 	} else {
-		a.ui.Warning("将生成明文私钥")
+		a.ui.PrintWarningCard("明文私钥风险", ui.CardField{Label: "续期私钥", Value: a.ui.LabelBadge("未加密", false)}, ui.CardField{Label: "风险", Value: "文件泄露后无法通过口令阻止使用"})
 		ok, e := a.ui.Confirm("确认？")
 		if e != nil || !ok {
 			return e
@@ -515,7 +612,12 @@ func (a *App) renew(ca, serial string) error {
 	}
 	result, e := a.certificates.Renew(ca, serial, days, caPW, keyPW, encrypt)
 	if e == nil {
-		a.ui.Success("续期完成，新序列号 " + result.Serial + "；旧证书未吊销")
+		a.ui.PrintSuccessCard("证书续期完成",
+			ui.CardField{Label: "旧序列号", Value: serial, Detail: "旧证书保留且未自动吊销"},
+			ui.CardField{Label: "新序列号", Value: result.Serial},
+			ui.CardField{Label: "有效期至", Value: result.NotAfter.Local().Format(time.RFC3339)},
+		)
+		a.ui.Pause()
 	}
 	return e
 }
@@ -550,14 +652,15 @@ func (a *App) exportCertificate(ca, serial string, format domain.ExportFormat) e
 			return er
 		}
 		if !ok {
-			return errors.New("已取消")
+			return errCancelled
 		}
 	}
 	if e = os.WriteFile(filepath.Clean(path), data, 0600); e == nil {
 		e = os.Chmod(filepath.Clean(path), 0600)
 	}
 	if e == nil {
-		a.ui.Success("已导出到 " + path)
+		a.ui.PrintSuccessCard("证书导出完成", ui.CardField{Label: "格式", Value: string(format)}, ui.CardField{Label: "文件", Value: path})
+		a.ui.Pause()
 	}
 	return e
 }
@@ -569,7 +672,11 @@ func (a *App) revocationMenu() error {
 	}
 	for {
 		a.ui.Header("主菜单 / 吊销与 CRL")
-		a.ui.Printf("1. 吊销证书\n2. 查看 CRL\n3. 重新生成 CRL\n\n0/q. 返回\n")
+		a.ui.MenuOptionHint("1", "吊销证书", "不可撤销并立即更新 CRL")
+		a.ui.MenuOptionHint("2", "查看 CRL", "编号、更新时间和吊销条目")
+		a.ui.MenuOptionHint("3", "重新生成 CRL", "默认 nextUpdate 为 7 天")
+		a.ui.MenuExit("0/q", "返回")
+		a.ui.Printf("\n")
 		v, e := a.ui.Ask("请选择: ")
 		if e != nil {
 			return e
@@ -581,8 +688,13 @@ func (a *App) revocationMenu() error {
 			crl, er := a.revocations.Read(ca)
 			e = er
 			if er == nil {
-				a.ui.Printf("编号: %s\nthisUpdate: %s\nnextUpdate: %s\n吊销条目: %d\n", crl.Number, crl.ThisUpdate.Local().Format(time.RFC3339), crl.NextUpdate.Local().Format(time.RFC3339), len(crl.RevokedCertificateEntries))
-				_, e = a.ui.Ask("按回车返回...")
+				a.ui.PrintInfoCard("CRL 详情",
+					ui.CardField{Label: "编号", Value: crl.Number.String()},
+					ui.CardField{Label: "thisUpdate", Value: crl.ThisUpdate.Local().Format(time.RFC3339)},
+					ui.CardField{Label: "nextUpdate", Value: crl.NextUpdate.Local().Format(time.RFC3339)},
+					ui.CardField{Label: "吊销条目", Value: fmt.Sprintf("%d 条", len(crl.RevokedCertificateEntries))},
+				)
+				a.ui.Pause()
 			}
 		case "3":
 			pw, er := a.ui.Password("CA 私钥口令: ")
@@ -590,16 +702,19 @@ func (a *App) revocationMenu() error {
 			if er == nil {
 				e = a.revocations.Generate(ca, pw)
 				if e == nil {
-					a.ui.Success("CRL 已重新生成")
+					a.ui.PrintSuccessCard("CRL 已重新生成", ui.CardField{Label: "CA ID", Value: ca}, ui.CardField{Label: "有效期", Value: "7 天"})
+					a.ui.Pause()
 				}
 			}
-		case "0", "q":
+		case "0", "q", "exit":
 			return nil
 		default:
-			a.ui.Warning("无效选项")
+			a.ui.InvalidChoice()
+			a.ui.Pause()
 		}
 		if e != nil {
 			a.ui.Error(e)
+			a.ui.Pause()
 		}
 	}
 }
@@ -610,8 +725,10 @@ func (a *App) revoke(ca string) error {
 	}
 	for i, c := range items {
 		_, _, status, _ := a.certificates.Get(ca, c.Serial)
-		a.ui.Printf("%d. %s %s %s\n", i+1, c.Serial, c.CommonName, a.ui.Badge(status))
+		a.ui.MenuOptionStatusHint(strconv.Itoa(i+1), c.CommonName, a.ui.Badge(status), c.Serial)
 	}
+	a.ui.MenuExit("0/q", "返回")
+	a.ui.Printf("\n")
 	v, e := a.ui.Ask("选择编号 (0 返回): ")
 	if e != nil || ui.IsBack(v) {
 		return e
@@ -623,8 +740,9 @@ func (a *App) revoke(ca string) error {
 	serial := items[n-1].Serial
 	reasons := revocation.Reasons()
 	for i, r := range reasons {
-		a.ui.Printf("%d. %s\n", i+1, r.Label)
+		a.ui.MenuOption(strconv.Itoa(i+1), r.Label)
 	}
+	a.ui.Printf("\n")
 	rv, e := a.ui.Ask("吊销原因: ")
 	if e != nil {
 		return e
@@ -633,6 +751,13 @@ func (a *App) revoke(ca string) error {
 	if e != nil || ri < 1 || ri > len(reasons) {
 		return errors.New("无效原因")
 	}
+	a.ui.Printf("\n")
+	a.ui.PrintDangerCard("确认永久吊销",
+		ui.CardField{Label: "证书", Value: items[n-1].CommonName},
+		ui.CardField{Label: "序列号", Value: serial},
+		ui.CardField{Label: "吊销原因", Value: reasons[ri-1].Label},
+		ui.CardField{Label: "影响", Value: "此操作不可撤销；成功后立即更新 CRL"},
+	)
 	confirm, e := a.ui.Ask("吊销不可撤销。请输入“吊销 " + serial + "”确认: ")
 	if e != nil {
 		return e
@@ -645,7 +770,12 @@ func (a *App) revoke(ca string) error {
 		return e
 	}
 	if e = a.revocations.Revoke(ca, serial, reasons[ri-1].Value, pw); e == nil {
-		a.ui.Success("证书已吊销，PEM/DER CRL 已更新")
+		a.ui.PrintDangerCard("证书已吊销",
+			ui.CardField{Label: "序列号", Value: serial},
+			ui.CardField{Label: "吊销原因", Value: reasons[ri-1].Label},
+			ui.CardField{Label: "CRL", Value: "PEM 和 DER 已更新"},
+		)
+		a.ui.Pause()
 	}
 	return e
 }
@@ -661,7 +791,12 @@ func (a *App) requireCurrent() (string, error) {
 	return id, nil
 }
 func (a *App) chooseProfile() (domain.Profile, error) {
-	v, e := a.ui.Ask("模板：1. 服务器  2. 客户端  (0 返回): ")
+	a.ui.MenuSection("选择证书模板")
+	a.ui.MenuOptionHint("1", "服务器证书", "ServerAuth，必须包含 DNS/IP SAN")
+	a.ui.MenuOptionHint("2", "客户端证书", "ClientAuth")
+	a.ui.MenuExit("0/q", "返回")
+	a.ui.Printf("\n")
+	v, e := a.ui.Ask("请选择: ")
 	if e != nil {
 		return "", e
 	}
@@ -670,15 +805,21 @@ func (a *App) chooseProfile() (domain.Profile, error) {
 		return domain.Server, nil
 	case "2":
 		return domain.Client, nil
-	case "0", "q":
-		return "", errors.New("已取消")
+	case "0", "q", "exit":
+		return "", errCancelled
 	default:
 		return "", errors.New("无效模板")
 	}
 }
 func (a *App) chooseAlgorithm(ca bool) (domain.Algorithm, error) {
 	if ca {
-		v, e := a.ui.Ask("算法：1. ECDSA P-384 [默认]  2. RSA-3072  3. RSA-4096: ")
+		a.ui.MenuSection("选择 CA 密钥算法")
+		a.ui.MenuOptionHint("1", "ECDSA P-384", "默认，推荐")
+		a.ui.MenuOption("2", "RSA-3072")
+		a.ui.MenuOption("3", "RSA-4096")
+		a.ui.MenuExit("0/q", "返回")
+		a.ui.Printf("\n")
+		v, e := a.ui.Ask("请选择 [1]: ")
 		if e != nil {
 			return "", e
 		}
@@ -689,11 +830,18 @@ func (a *App) chooseAlgorithm(ca bool) (domain.Algorithm, error) {
 			return domain.RSA3072, nil
 		case "3":
 			return domain.RSA4096, nil
+		case "0", "q", "exit":
+			return "", errCancelled
 		default:
 			return "", errors.New("无效算法")
 		}
 	}
-	v, e := a.ui.Ask("算法：1. ECDSA P-256 [默认]  2. RSA-3072: ")
+	a.ui.MenuSection("选择终端密钥算法")
+	a.ui.MenuOptionHint("1", "ECDSA P-256", "默认，推荐")
+	a.ui.MenuOption("2", "RSA-3072")
+	a.ui.MenuExit("0/q", "返回")
+	a.ui.Printf("\n")
+	v, e := a.ui.Ask("请选择 [1]: ")
 	if e != nil {
 		return "", e
 	}
@@ -702,6 +850,9 @@ func (a *App) chooseAlgorithm(ca bool) (domain.Algorithm, error) {
 	}
 	if v == "2" {
 		return domain.RSA3072, nil
+	}
+	if ui.IsBack(v) {
+		return "", errCancelled
 	}
 	return "", errors.New("无效算法")
 }

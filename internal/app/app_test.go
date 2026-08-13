@@ -32,7 +32,7 @@ func TestScriptedMenuCreatesRootAndExits(t *testing.T) {
 	if len(items) != 1 || items[0].Name != "测试根" {
 		t.Fatalf("authorities: %#v", items)
 	}
-	if !strings.Contains(out.String(), "[成功] 根 CA 已创建") {
+	if !strings.Contains(out.String(), "根 CA 创建完成") {
 		t.Fatalf("missing success output:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), "版本 v9.8.7") {

@@ -24,7 +24,7 @@ func main() {
 		return
 	}
 	if flag.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "caforge 不提供自动化子命令；请直接运行交互菜单")
+		ui.NewConsole().Error(fmt.Errorf("caforge 不提供自动化子命令；请直接运行交互菜单"))
 		os.Exit(2)
 	}
 	home := os.Getenv("CAFORGE_HOME")
@@ -43,4 +43,4 @@ func main() {
 		fatal(e)
 	}
 }
-func fatal(err error) { fmt.Fprintln(os.Stderr, "错误:", err); os.Exit(1) }
+func fatal(err error) { ui.NewConsole().Error(err); os.Exit(1) }
