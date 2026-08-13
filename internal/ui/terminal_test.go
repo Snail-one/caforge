@@ -76,6 +76,18 @@ func TestCardsAndPromptFollowTargetStyle(t *testing.T) {
 	}
 }
 
+func TestConfirmRetriesInvalidInput(t *testing.T) {
+	var out bytes.Buffer
+	term := New(strings.NewReader("maybe\ny\n"), &out, false, nil)
+	ok, err := term.Confirm("是否继续？")
+	if err != nil || !ok {
+		t.Fatalf("Confirm() = %v, %v", ok, err)
+	}
+	if !strings.Contains(out.String(), "请输入 y 或 n") {
+		t.Fatalf("没有提示并重试无效确认：%s", out.String())
+	}
+}
+
 func TestNoColorTakesPrecedenceOverForce(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	t.Setenv("CLICOLOR_FORCE", "1")

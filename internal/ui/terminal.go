@@ -242,12 +242,21 @@ func (t *Terminal) Confirm(prompt string) (bool, error) {
 	if !strings.Contains(strings.ToLower(prompt), "y/n") {
 		prompt = strings.TrimSpace(prompt) + "（y/N）"
 	}
-	v, e := t.Ask(prompt)
-	if e != nil {
-		return false, e
+	for {
+		v, e := t.Ask(prompt)
+		if e != nil {
+			return false, e
+		}
+		v = strings.ToLower(strings.TrimSpace(v))
+		switch v {
+		case "y", "yes", "是":
+			return true, nil
+		case "", "n", "no", "否":
+			return false, nil
+		default:
+			t.Warning("请输入 y 或 n")
+		}
 	}
-	v = strings.TrimSpace(v)
-	return strings.EqualFold(v, "y") || strings.EqualFold(v, "yes") || v == "是", nil
 }
 
 func (t *Terminal) Pause() { t.PauseWithPrompt("按回车返回菜单…") }

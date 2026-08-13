@@ -83,10 +83,10 @@ func (a *App) Run() error {
 				certificateBadge = a.ui.LabelBadge(fmt.Sprintf("%d 张", len(certificates)), len(certificates) > 0)
 			}
 		}
-		a.ui.MenuOptionStatus("1", "CA 管理", a.ui.LabelBadge(fmt.Sprintf("%d 个", len(authorities)), len(authorities) > 0))
-		a.ui.MenuOptionStatus("2", "证书签发", currentBadge)
-		a.ui.MenuOptionStatus("3", "证书管理", certificateBadge)
-		a.ui.MenuOptionStatus("4", "吊销与 CRL", currentBadge)
+		a.ui.MenuOptionStatusHint("1", "CA 管理", a.ui.LabelBadge(fmt.Sprintf("%d 个", len(authorities)), len(authorities) > 0), "创建、查看和选择签发机构")
+		a.ui.MenuOptionStatusHint("2", "证书签发", currentBadge, "生成密钥签发或导入 CSR")
+		a.ui.MenuOptionStatusHint("3", "证书管理", certificateBadge, "查询、续期和导出证书")
+		a.ui.MenuOptionStatusHint("4", "吊销与 CRL", currentBadge, "永久吊销证书并管理 CRL")
 		a.ui.MenuExit("0/q", "退出")
 		a.ui.Printf("\n")
 		choice, e := a.ui.Ask("请选择: ")
@@ -111,7 +111,6 @@ func (a *App) Run() error {
 			return nil
 		default:
 			a.ui.InvalidChoice()
-			a.ui.Pause()
 		}
 		if e != nil {
 			if errors.Is(e, io.EOF) {
@@ -149,7 +148,6 @@ func (a *App) caMenu() error {
 			return nil
 		default:
 			a.ui.InvalidChoice()
-			a.ui.Pause()
 		}
 		if e != nil && !errors.Is(e, errCancelled) {
 			a.ui.Error(e)
@@ -160,8 +158,15 @@ func (a *App) caMenu() error {
 }
 func (a *App) createRoot() error {
 	a.ui.Header("主菜单 / CA 管理 / 创建根 CA")
-	name, e := a.ui.Ask("CA 名称 (0 返回): ")
-	if e != nil || ui.IsBack(name) {
+	a.ui.PrintInfoCard("根 CA 用途",
+		ui.CardField{Label: "角色", Value: "自签名信任锚；用于签发一层中间 CA"},
+		ui.CardField{Label: "默认算法", Value: "ECDSA P-384"},
+		ui.CardField{Label: "默认有效期", Value: "3650 天（10 年）"},
+		ui.CardField{Label: "私钥", Value: "强制使用口令加密，不会保存口令"},
+	)
+	a.ui.Printf("\n")
+	name, e := a.askRequired("CA 名称（用于识别此信任锚，0 返回）: ", true)
+	if e != nil {
 		return e
 	}
 	alg, e := a.chooseAlgorithm(true)
@@ -189,6 +194,13 @@ func (a *App) createRoot() error {
 }
 func (a *App) createIntermediate() error {
 	a.ui.Header("主菜单 / CA 管理 / 创建中间 CA")
+	a.ui.PrintInfoCard("中间 CA 用途",
+		ui.CardField{Label: "角色", Value: "日常签发服务器和客户端证书"},
+		ui.CardField{Label: "层级", Value: "只能由根 CA 签发，不能继续签发下级 CA"},
+		ui.CardField{Label: "默认有效期", Value: "1825 天（5 年），且不会超过父 CA"},
+		ui.CardField{Label: "私钥", Value: "强制使用独立口令加密"},
+	)
+	a.ui.Printf("\n")
 	parent, e := a.chooseAuthority(true)
 	if e != nil || parent == "" {
 		return e
@@ -200,7 +212,7 @@ func (a *App) createIntermediate() error {
 	if !meta.IsRoot() {
 		return errors.New("只能选择根 CA 作为父级")
 	}
-	name, e := a.ui.Ask("中间 CA 名称: ")
+	name, e := a.askRequired("中间 CA 名称（用于识别签发机构，0 返回）: ", true)
 	if e != nil {
 		return e
 	}
@@ -251,13 +263,9 @@ func (a *App) showAuthorities() error {
 	}
 	a.ui.MenuExit("0/q", "返回")
 	a.ui.Printf("\n")
-	sel, e := a.ui.Ask("输入编号查看详情，0 返回: ")
-	if e != nil || ui.IsBack(sel) {
+	n, e := a.askIndex("输入编号查看详情，0 返回: ", len(items))
+	if e != nil {
 		return e
-	}
-	n, e := strconv.Atoi(sel)
-	if e != nil || n < 1 || n > len(items) {
-		return errors.New("无效编号")
 	}
 	v, c, e := a.authorities.Get(items[n-1].ID)
 	if e != nil {
@@ -306,13 +314,9 @@ func (a *App) chooseAuthority(rootOnly bool) (string, error) {
 	}
 	a.ui.MenuExit("0/q", "返回")
 	a.ui.Printf("\n")
-	v, e := a.ui.Ask("选择编号 (0 返回): ")
-	if e != nil || ui.IsBack(v) {
+	n, e := a.askIndex("选择编号（决定后续操作使用哪个 CA，0 返回）: ", len(filtered))
+	if e != nil {
 		return "", e
-	}
-	n, e := strconv.Atoi(v)
-	if e != nil || n < 1 || n > len(filtered) {
-		return "", errors.New("无效编号")
 	}
 	return filtered[n-1].ID, nil
 }
@@ -344,7 +348,6 @@ func (a *App) issueMenu() error {
 			return nil
 		default:
 			a.ui.InvalidChoice()
-			a.ui.Pause()
 		}
 		if e != nil && !errors.Is(e, errCancelled) {
 			a.ui.Error(e)
@@ -355,28 +358,43 @@ func (a *App) issueMenu() error {
 }
 func (a *App) issueGenerated(ca string) error {
 	a.ui.Header("主菜单 / 证书签发 / 生成密钥")
+	a.ui.PrintInfoCard("签发说明",
+		ui.CardField{Label: "服务器证书", Value: "用于 HTTPS/TLS 服务，必须提供 DNS 或 IP SAN"},
+		ui.CardField{Label: "客户端证书", Value: "用于用户、设备或服务的双向 TLS 身份认证"},
+		ui.CardField{Label: "私钥", Value: "由 CAForge 新建并保存，可选择口令加密"},
+	)
+	a.ui.Printf("\n")
 	profile, e := a.chooseProfile()
 	if e != nil {
 		return e
 	}
-	cn, e := a.ui.Ask("通用名称 CN: ")
+	cn, e := a.askRequired("通用名称 CN（证书主要显示名称，0 返回）: ", true)
 	if e != nil {
 		return e
 	}
 	var dns, ips []string
 	if profile == domain.Server {
-		d, e := a.ui.Ask("DNS SAN（逗号分隔，可空）: ")
-		if e != nil {
-			return e
-		}
-		i, e := a.ui.Ask("IP SAN（逗号分隔，可空）: ")
-		if e != nil {
-			return e
-		}
-		dns = csv(d)
-		ips = csv(i)
-		if e = certificate.ValidateSANs(dns, ips); e != nil {
-			return e
+		for {
+			d, err := a.ui.Ask("DNS SAN（客户端访问使用的域名，逗号分隔，可空）: ")
+			if err != nil {
+				return err
+			}
+			if ui.IsBack(d) {
+				return errCancelled
+			}
+			i, err := a.ui.Ask("IP SAN（客户端访问使用的 IP，逗号分隔，可空）: ")
+			if err != nil {
+				return err
+			}
+			if ui.IsBack(i) {
+				return errCancelled
+			}
+			dns, ips = csv(d), csv(i)
+			if err = certificate.ValidateSANs(dns, ips); err != nil {
+				a.ui.Warning(err.Error() + "，请重新输入 SAN")
+				continue
+			}
+			break
 		}
 	}
 	alg, e := a.chooseAlgorithm(false)
@@ -387,7 +405,7 @@ func (a *App) issueGenerated(ca string) error {
 	if e != nil {
 		return e
 	}
-	encrypt, e := a.ui.Confirm("加密终端私钥？")
+	encrypt, e := a.chooseKeyEncryption()
 	if e != nil {
 		return e
 	}
@@ -428,11 +446,13 @@ func (a *App) issueGenerated(ca string) error {
 }
 func (a *App) issueCSR(ca string) error {
 	a.ui.Header("主菜单 / 证书签发 / CSR 签发")
-	path, e := a.ui.Ask("CSR PEM 文件路径: ")
-	if e != nil {
-		return e
-	}
-	data, e := os.ReadFile(filepath.Clean(path))
+	a.ui.PrintInfoCard("CSR 签发说明",
+		ui.CardField{Label: "签名", Value: "验证 CSR 自身签名和公钥强度"},
+		ui.CardField{Label: "扩展", Value: "只采用经过校验的 SAN，不复制未知扩展或 CA 权限"},
+		ui.CardField{Label: "私钥", Value: "仍由 CSR 申请者保管，CAForge 不保存"},
+	)
+	a.ui.Printf("\n")
+	_, data, e := a.askReadableFile("CSR PEM 文件路径（0 返回）: ")
 	if e != nil {
 		return e
 	}
@@ -440,9 +460,12 @@ func (a *App) issueCSR(ca string) error {
 	if e != nil {
 		return e
 	}
-	name, e := a.ui.Ask("覆盖通用名称 CN（留空使用 CSR）: ")
+	name, e := a.ui.Ask("覆盖通用名称 CN（留空使用 CSR 内的名称，0 返回）: ")
 	if e != nil {
 		return e
+	}
+	if ui.IsBack(name) {
+		return errCancelled
 	}
 	days, e := a.days("有效天数 [397]: ", 397)
 	if e != nil {
@@ -500,7 +523,7 @@ func (a *App) certificateMenu() error {
 			_, _, status, _ := a.certificates.Get(ca, c.Serial)
 			a.ui.MenuOptionStatusHint(strconv.Itoa(i+1), c.CommonName, a.ui.Badge(status), c.Serial+" · "+string(c.Profile))
 		}
-		a.ui.MenuOption("f", "筛选证书")
+		a.ui.MenuOptionHint("f", "筛选证书", "按序列号、通用名称或模板查找")
 		a.ui.MenuExit("0/q", "返回")
 		a.ui.Printf("\n")
 		v, e := a.ui.Ask("选择证书编号，f 筛选，0 返回: ")
@@ -520,13 +543,13 @@ func (a *App) certificateMenu() error {
 		n, e := strconv.Atoi(v)
 		if e != nil || n < 1 || n > len(items) {
 			a.ui.InvalidChoice()
-			a.ui.Pause()
 			continue
 		}
-		if e = a.certificateActions(ca, items[n-1].Serial); e != nil {
+		if e = a.certificateActions(ca, items[n-1].Serial); e != nil && !errors.Is(e, errCancelled) {
 			a.ui.Error(e)
 			a.ui.Pause()
 		}
+		e = nil
 	}
 }
 func (a *App) certificateActions(ca, serial string) error {
@@ -575,7 +598,6 @@ func (a *App) certificateActions(ca, serial string) error {
 			return nil
 		default:
 			a.ui.InvalidChoice()
-			a.ui.Pause()
 		}
 		if e != nil && !errors.Is(e, errCancelled) {
 			a.ui.Error(e)
@@ -589,7 +611,7 @@ func (a *App) renew(ca, serial string) error {
 	if e != nil {
 		return e
 	}
-	encrypt, e := a.ui.Confirm("加密新私钥？")
+	encrypt, e := a.chooseKeyEncryption()
 	if e != nil {
 		return e
 	}
@@ -602,8 +624,11 @@ func (a *App) renew(ca, serial string) error {
 	} else {
 		a.ui.PrintWarningCard("明文私钥风险", ui.CardField{Label: "续期私钥", Value: a.ui.LabelBadge("未加密", false)}, ui.CardField{Label: "风险", Value: "文件泄露后无法通过口令阻止使用"})
 		ok, e := a.ui.Confirm("确认？")
-		if e != nil || !ok {
+		if e != nil {
 			return e
+		}
+		if !ok {
+			return errCancelled
 		}
 	}
 	caPW, e := a.ui.Password("CA 私钥口令: ")
@@ -710,12 +735,12 @@ func (a *App) revocationMenu() error {
 			return nil
 		default:
 			a.ui.InvalidChoice()
-			a.ui.Pause()
 		}
-		if e != nil {
+		if e != nil && !errors.Is(e, errCancelled) {
 			a.ui.Error(e)
 			a.ui.Pause()
 		}
+		e = nil
 	}
 }
 func (a *App) revoke(ca string) error {
@@ -723,33 +748,31 @@ func (a *App) revoke(ca string) error {
 	if e != nil {
 		return e
 	}
+	if len(items) == 0 {
+		a.ui.Warning("当前 CA 没有可吊销的签发记录")
+		a.ui.Pause()
+		return nil
+	}
 	for i, c := range items {
 		_, _, status, _ := a.certificates.Get(ca, c.Serial)
 		a.ui.MenuOptionStatusHint(strconv.Itoa(i+1), c.CommonName, a.ui.Badge(status), c.Serial)
 	}
 	a.ui.MenuExit("0/q", "返回")
 	a.ui.Printf("\n")
-	v, e := a.ui.Ask("选择编号 (0 返回): ")
-	if e != nil || ui.IsBack(v) {
+	n, e := a.askIndex("选择要永久吊销的证书编号（0 返回）: ", len(items))
+	if e != nil {
 		return e
-	}
-	n, e := strconv.Atoi(v)
-	if e != nil || n < 1 || n > len(items) {
-		return errors.New("无效编号")
 	}
 	serial := items[n-1].Serial
 	reasons := revocation.Reasons()
 	for i, r := range reasons {
-		a.ui.MenuOption(strconv.Itoa(i+1), r.Label)
+		a.ui.MenuOptionHint(strconv.Itoa(i+1), r.Label, revocationReasonHint(r.Value))
 	}
+	a.ui.MenuExit("0/q", "返回")
 	a.ui.Printf("\n")
-	rv, e := a.ui.Ask("吊销原因: ")
+	ri, e := a.askIndex("选择最符合实际情况的吊销原因（0 返回）: ", len(reasons))
 	if e != nil {
 		return e
-	}
-	ri, e := strconv.Atoi(rv)
-	if e != nil || ri < 1 || ri > len(reasons) {
-		return errors.New("无效原因")
 	}
 	a.ui.Printf("\n")
 	a.ui.PrintDangerCard("确认永久吊销",
@@ -758,12 +781,19 @@ func (a *App) revoke(ca string) error {
 		ui.CardField{Label: "吊销原因", Value: reasons[ri-1].Label},
 		ui.CardField{Label: "影响", Value: "此操作不可撤销；成功后立即更新 CRL"},
 	)
-	confirm, e := a.ui.Ask("吊销不可撤销。请输入“吊销 " + serial + "”确认: ")
-	if e != nil {
-		return e
-	}
-	if confirm != "吊销 "+serial {
-		return errors.New("确认文字不匹配，已取消")
+	for {
+		confirm, err := a.ui.Ask("请输入“吊销 " + serial + "”确认，或输入 0 返回: ")
+		if err != nil {
+			return err
+		}
+		if ui.IsBack(confirm) {
+			return errCancelled
+		}
+		if confirm != "吊销 "+serial {
+			a.ui.Warning("确认文字不匹配，证书尚未吊销，请重新输入")
+			continue
+		}
+		break
 	}
 	pw, e := a.ui.Password("CA 私钥口令: ")
 	if e != nil {
@@ -791,95 +821,223 @@ func (a *App) requireCurrent() (string, error) {
 	return id, nil
 }
 func (a *App) chooseProfile() (domain.Profile, error) {
-	a.ui.MenuSection("选择证书模板")
-	a.ui.MenuOptionHint("1", "服务器证书", "ServerAuth，必须包含 DNS/IP SAN")
-	a.ui.MenuOptionHint("2", "客户端证书", "ClientAuth")
-	a.ui.MenuExit("0/q", "返回")
-	a.ui.Printf("\n")
-	v, e := a.ui.Ask("请选择: ")
-	if e != nil {
-		return "", e
-	}
-	switch v {
-	case "1":
-		return domain.Server, nil
-	case "2":
-		return domain.Client, nil
-	case "0", "q", "exit":
-		return "", errCancelled
-	default:
-		return "", errors.New("无效模板")
+	for {
+		a.ui.MenuSection("选择证书模板")
+		a.ui.MenuOptionHint("1", "服务器证书", "ServerAuth；用于 HTTPS/TLS 服务，必须包含 DNS/IP SAN")
+		a.ui.MenuOptionHint("2", "客户端证书", "ClientAuth；用于用户、设备或服务身份认证")
+		a.ui.MenuExit("0/q", "返回")
+		a.ui.Printf("\n")
+		v, e := a.ui.Ask("请选择证书用途: ")
+		if e != nil {
+			return "", e
+		}
+		switch strings.ToLower(v) {
+		case "1":
+			return domain.Server, nil
+		case "2":
+			return domain.Client, nil
+		case "0", "q", "exit":
+			return "", errCancelled
+		default:
+			a.ui.InvalidChoice()
+		}
 	}
 }
 func (a *App) chooseAlgorithm(ca bool) (domain.Algorithm, error) {
 	if ca {
-		a.ui.MenuSection("选择 CA 密钥算法")
-		a.ui.MenuOptionHint("1", "ECDSA P-384", "默认，推荐")
-		a.ui.MenuOption("2", "RSA-3072")
-		a.ui.MenuOption("3", "RSA-4096")
+		for {
+			a.ui.MenuSection("选择 CA 密钥算法")
+			a.ui.MenuOptionHint("1", "ECDSA P-384", "默认推荐；密钥小、签名快、安全强度高")
+			a.ui.MenuOptionHint("2", "RSA-3072", "兼容只支持 RSA 的旧系统")
+			a.ui.MenuOptionHint("3", "RSA-4096", "更大 RSA 密钥；生成和签名更慢")
+			a.ui.MenuExit("0/q", "返回")
+			a.ui.Printf("\n")
+			v, e := a.ui.Ask("请选择密钥算法 [1]: ")
+			if e != nil {
+				return "", e
+			}
+			switch strings.ToLower(v) {
+			case "", "1":
+				return domain.ECDSAP384, nil
+			case "2":
+				return domain.RSA3072, nil
+			case "3":
+				return domain.RSA4096, nil
+			case "0", "q", "exit":
+				return "", errCancelled
+			default:
+				a.ui.InvalidChoice()
+			}
+		}
+	}
+	for {
+		a.ui.MenuSection("选择终端密钥算法")
+		a.ui.MenuOptionHint("1", "ECDSA P-256", "默认推荐；适合现代 TLS，密钥和证书更小")
+		a.ui.MenuOptionHint("2", "RSA-3072", "用于必须兼容 RSA 的客户端或服务")
 		a.ui.MenuExit("0/q", "返回")
 		a.ui.Printf("\n")
-		v, e := a.ui.Ask("请选择 [1]: ")
+		v, e := a.ui.Ask("请选择密钥算法 [1]: ")
 		if e != nil {
 			return "", e
 		}
-		switch v {
+		switch strings.ToLower(v) {
 		case "", "1":
-			return domain.ECDSAP384, nil
+			return domain.ECDSAP256, nil
 		case "2":
 			return domain.RSA3072, nil
-		case "3":
-			return domain.RSA4096, nil
 		case "0", "q", "exit":
 			return "", errCancelled
 		default:
-			return "", errors.New("无效算法")
+			a.ui.InvalidChoice()
 		}
 	}
-	a.ui.MenuSection("选择终端密钥算法")
-	a.ui.MenuOptionHint("1", "ECDSA P-256", "默认，推荐")
-	a.ui.MenuOption("2", "RSA-3072")
-	a.ui.MenuExit("0/q", "返回")
-	a.ui.Printf("\n")
-	v, e := a.ui.Ask("请选择 [1]: ")
-	if e != nil {
-		return "", e
-	}
-	if v == "" || v == "1" {
-		return domain.ECDSAP256, nil
-	}
-	if v == "2" {
-		return domain.RSA3072, nil
-	}
-	if ui.IsBack(v) {
-		return "", errCancelled
-	}
-	return "", errors.New("无效算法")
 }
 func (a *App) days(prompt string, def int) (int, error) {
-	v, e := a.ui.Ask(prompt)
-	if e != nil {
-		return 0, e
+	for {
+		v, e := a.ui.Ask(prompt)
+		if e != nil {
+			return 0, e
+		}
+		if ui.IsBack(v) {
+			return 0, errCancelled
+		}
+		days, err := store.ParsePositiveDays(v, def)
+		if err != nil {
+			a.ui.Warning(err.Error() + "，例如输入 397；输入 0 可返回")
+			continue
+		}
+		return days, nil
 	}
-	return store.ParsePositiveDays(v, def)
 }
 func (a *App) confirmedPassword(prompt string) ([]byte, error) {
-	first, e := a.ui.Password(prompt)
-	if e != nil {
-		return nil, e
+	for {
+		first, e := a.ui.Password(prompt)
+		if e != nil {
+			return nil, e
+		}
+		if len(first) == 0 {
+			a.ui.Warning("口令不能为空，请重新输入")
+			continue
+		}
+		second, e := a.ui.Password("再次输入口令: ")
+		if e != nil {
+			return nil, e
+		}
+		if string(first) != string(second) {
+			a.ui.Warning("两次口令不一致，请重新设置")
+			continue
+		}
+		return first, nil
 	}
-	if len(first) == 0 {
-		return nil, errors.New("口令不能为空")
-	}
-	second, e := a.ui.Password("再次输入口令: ")
-	if e != nil {
-		return nil, e
-	}
-	if string(first) != string(second) {
-		return nil, errors.New("两次口令不一致")
-	}
-	return first, nil
 }
+
+func (a *App) askRequired(prompt string, allowBack bool) (string, error) {
+	for {
+		value, err := a.ui.Ask(prompt)
+		if err != nil {
+			return "", err
+		}
+		if allowBack && ui.IsBack(value) {
+			return "", errCancelled
+		}
+		if strings.TrimSpace(value) == "" {
+			a.ui.Warning("此项不能为空，请重新输入")
+			continue
+		}
+		return strings.TrimSpace(value), nil
+	}
+}
+
+func (a *App) askIndex(prompt string, count int) (int, error) {
+	for {
+		value, err := a.ui.Ask(prompt)
+		if err != nil {
+			return 0, err
+		}
+		if ui.IsBack(value) {
+			return 0, errCancelled
+		}
+		index, err := strconv.Atoi(value)
+		if err != nil || index < 1 || index > count {
+			a.ui.Warning(fmt.Sprintf("请输入 1 到 %d 之间的编号，或输入 0/q 返回", count))
+			continue
+		}
+		return index, nil
+	}
+}
+
+func (a *App) askReadableFile(prompt string) (string, []byte, error) {
+	for {
+		path, err := a.ui.Ask(prompt)
+		if err != nil {
+			return "", nil, err
+		}
+		if ui.IsBack(path) {
+			return "", nil, errCancelled
+		}
+		if strings.TrimSpace(path) == "" {
+			a.ui.Warning("文件路径不能为空，请重新输入")
+			continue
+		}
+		clean := filepath.Clean(path)
+		data, err := os.ReadFile(clean)
+		if err != nil {
+			a.ui.Warning("无法读取文件：" + err.Error() + "；请检查路径后重新输入")
+			continue
+		}
+		return clean, data, nil
+	}
+}
+
+func (a *App) chooseKeyEncryption() (bool, error) {
+	for {
+		a.ui.MenuSection("选择私钥保护方式")
+		a.ui.MenuOptionHint("1", "口令加密", "推荐；私钥文件泄露后仍需口令才能使用")
+		a.ui.MenuOptionHint("2", "明文保存", "仅用于受严格权限保护的兼容场景，泄露后可直接使用")
+		a.ui.MenuExit("0/q", "返回")
+		a.ui.Printf("\n")
+		value, err := a.ui.Ask("请选择保护方式 [1]: ")
+		if err != nil {
+			return false, err
+		}
+		switch strings.ToLower(value) {
+		case "", "1":
+			return true, nil
+		case "2":
+			return false, nil
+		case "0", "q", "exit":
+			return false, errCancelled
+		default:
+			a.ui.InvalidChoice()
+		}
+	}
+}
+
+func revocationReasonHint(reason domain.RevocationReason) string {
+	switch reason {
+	case domain.Unspecified:
+		return "无法归入其他原因时使用"
+	case domain.KeyCompromise:
+		return "证书对应私钥已泄露或疑似泄露"
+	case domain.CACompromise:
+		return "签发机构私钥已泄露；通常用于 CA 证书"
+	case domain.AffiliationChanged:
+		return "持有者的组织、域名或从属关系已变化"
+	case domain.Superseded:
+		return "已有新证书替代当前证书"
+	case domain.CessationOfOperation:
+		return "服务、设备或实体已停止运营"
+	case domain.CertificateHold:
+		return "临时暂停使用；CAForge 首版仍不可撤销"
+	case domain.PrivilegeWithdrawn:
+		return "证书持有者的授权或权限已撤回"
+	case domain.AACompromise:
+		return "属性授权机构已泄露"
+	default:
+		return "RFC 5280 吊销原因"
+	}
+}
+
 func csv(v string) []string {
 	var out []string
 	for _, s := range strings.Split(v, ",") {

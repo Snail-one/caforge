@@ -1,6 +1,6 @@
 # CAForge GitHub CI/CD
 
-CAForge 使用一条正式 Release 流水线。它参考 ServerTool 的测试、矩阵构建、校验和与 Release 分层设计，并根据 CAForge 的本地跨平台用途扩展到 Linux 和 macOS。
+CAForge 使用一条精简的正式 Release 流水线，只包含矩阵编译和 GitHub Release 发布，并根据 CAForge 的本地跨平台用途覆盖 Linux 和 macOS。
 
 ## 正式发布
 
@@ -16,16 +16,14 @@ git push origin v1.0.0
 发布流程为：
 
 ```text
-验证版本和标签
-  └── 测试 / vet / race
-        └── 四平台并行构建
-              └── 汇总 Artifact
-                    └── SHA-256 校验和
-                          └── Release Notes
-                                └── GitHub Release
+四平台并行构建
+  └── 汇总 Artifact
+        └── SHA-256 校验和
+              └── Release Notes
+                    └── GitHub Release
 ```
 
-正式版本必须采用 `v主版本.次版本.修订版本`，也允许 `v1.0.0-rc.1` 形式的后缀。手动发布使用已经存在的标签时，标签必须指向本次工作流的提交，否则流程会拒绝发布。
+建议正式版本采用 `v主版本.次版本.修订版本`，也可以使用 `v1.0.0-rc.1` 形式的预发布后缀。
 
 ## Release 产物
 
@@ -39,15 +37,15 @@ caforge_darwin_arm64_v1.0.0
 checksums_v1.0.0.txt
 ```
 
-所有二进制使用相同的版本、完整提交 SHA 和 UTC 构建时间，并通过 `-trimpath`、`CGO_ENABLED=0` 构建。流水线会执行 Linux amd64 产物的 `--version`，确认内嵌元数据与 Release 一致。
+所有二进制使用相同的版本、完整提交 SHA 和提交时间，并通过 `-trimpath`、`CGO_ENABLED=0` 构建。
 
 发布说明由两部分组成：`scripts/generate_release_notes.sh` 列出上一个版本以来的直接提交，GitHub 原生 Release Notes 补充 Pull Request、贡献者和比较链接。
 
 ## 权限与失败处理
 
-- Validate、Test、Build 只有只读权限。
+- Build Job 只有只读权限。
 - 只有最终 Release Job 拥有 `contents: write`。
-- 任一测试或任一平台构建失败都会阻止发布。
+- 任一平台构建失败都会阻止发布。
 - Artifact 缺失、校验和生成失败或 Release Notes 失败都会阻止发布。
 - 同一版本的发布不会相互取消或并发执行。
 - 发布失败且源码未改变时，应重新运行失败的 Job，不应移动已公开使用的标签。
@@ -66,5 +64,4 @@ go test ./...
 go vet ./...
 VERSION=v1.0.0 ./build.sh /tmp/caforge
 /tmp/caforge --version
-scripts/validate_release_version.sh v1.0.0
 ```
