@@ -23,7 +23,17 @@ VERSION=1.0.0 ./build.sh ./dist/caforge
 CAFORGE_HOME=/path/to/private/directory ./caforge
 ```
 
-支持 `--help` 和 `--version`，不提供自动化子命令。设置 `NO_COLOR=1` 可关闭 ANSI 颜色；非终端输出和 `TERM=dumb` 也会自动关闭颜色。
+支持 `--help`、`--version` 和 `-v`，不提供自动化子命令。主菜单显示构建版本徽标，版本命令同时显示提交、构建时间、Go 版本和运行平台：
+
+```text
+caforge v1.0.0
+commit: abc1234
+build date: 2026-08-13T12:00:00Z
+go: go1.26.5
+platform: linux/amd64
+```
+
+设置 `NO_COLOR=1` 可关闭 ANSI 颜色；非终端输出和 `TERM=dumb` 也会自动关闭颜色。
 
 ## 安全与兼容性
 

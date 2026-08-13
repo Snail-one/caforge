@@ -9,18 +9,18 @@ import (
 	"caforge/internal/app"
 	"caforge/internal/store"
 	"caforge/internal/ui"
+	"caforge/internal/version"
 )
-
-var version = "dev"
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "CAForge - 本地 CA 管理工具\n\n用法: caforge [--help] [--version]\n\n数据目录默认为 ~/.caforge，可用 CAFORGE_HOME 覆盖。\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "CAForge - 本地 CA 管理工具\n\n用法: caforge [--help] [--version|-v]\n\n数据目录默认为 ~/.caforge，可用 CAFORGE_HOME 覆盖。\n")
 	}
 	showVersion := flag.Bool("version", false, "显示版本")
+	showShortVersion := flag.Bool("v", false, "显示版本")
 	flag.Parse()
-	if *showVersion {
-		fmt.Println("caforge " + version)
+	if *showVersion || *showShortVersion {
+		fmt.Println(version.Info())
 		return
 	}
 	if flag.NArg() != 0 {

@@ -17,6 +17,7 @@ import (
 	"caforge/internal/revocation"
 	"caforge/internal/store"
 	"caforge/internal/ui"
+	"caforge/internal/version"
 )
 
 type App struct {
@@ -68,7 +69,7 @@ func (a *App) Run() error {
 	}
 	for {
 		current, _ := a.repo.CurrentCA()
-		a.ui.Header("主菜单")
+		a.ui.HomeHeader(version.Version)
 		if current == "" {
 			a.ui.Printf("当前 CA：未选择\n\n")
 		} else {

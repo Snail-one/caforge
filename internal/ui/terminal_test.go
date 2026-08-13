@@ -22,3 +22,17 @@ func TestNavigationAndNoColor(t *testing.T) {
 		t.Fatal("back navigation mismatch")
 	}
 }
+
+func TestHomeHeaderIncludesVersion(t *testing.T) {
+	var out bytes.Buffer
+	term := New(strings.NewReader(""), &out, false, nil)
+	term.HomeHeader("v9.8.7")
+	for _, want := range []string{"CAForge", "本地 CA 管理工具", "版本 v9.8.7"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("主菜单标题缺少 %q：\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "\x1b[") {
+		t.Fatal("禁用颜色时不应输出 ANSI 转义序列")
+	}
+}

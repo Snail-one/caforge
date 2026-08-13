@@ -58,6 +58,17 @@ func (t *Terminal) Header(path string) {
 	fmt.Fprintln(t.out, t.code("1;36", "CAForge")+"  "+t.code("2", path))
 	fmt.Fprintln(t.out, t.code("2", strings.Repeat("─", 64)))
 }
+
+func (t *Terminal) HomeHeader(buildVersion string) {
+	buildVersion = strings.TrimSpace(buildVersion)
+	if buildVersion == "" {
+		buildVersion = "dev"
+	}
+	t.Clear()
+	fmt.Fprintln(t.out, t.code("1;36", "╭─ CAForge"))
+	fmt.Fprintln(t.out, t.code("36", "│")+" 本地 CA 管理工具  "+t.code("30;42", " 版本 "+buildVersion+" "))
+	fmt.Fprintln(t.out, t.code("36", "╰"+strings.Repeat("─", 62)))
+}
 func (t *Terminal) Printf(format string, args ...any) { fmt.Fprintf(t.out, format, args...) }
 func (t *Terminal) Success(s string)                  { fmt.Fprintln(t.out, t.code("32", "[成功] ")+s) }
 func (t *Terminal) Warning(s string)                  { fmt.Fprintln(t.out, t.code("33", "[警告] ")+s) }
