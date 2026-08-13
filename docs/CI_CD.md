@@ -41,6 +41,8 @@ checksums.txt
 
 每个 GitHub Release 都使用固定名称 `checksums.txt`。Release 本身已经按版本隔离附件，因此无需在校验文件名中重复版本号；下载后可直接运行 `sha256sum -c checksums.txt`。
 
+`scripts/install.sh` 和 `caforge update` 会使用该文件校验当前程序及新下载的发布文件。完整客户端流程见 [安装、更新与卸载](INSTALL_UPDATE.md)。
+
 发布说明由两部分组成：`scripts/generate_release_notes.sh` 列出上一个版本以来的直接提交，GitHub 原生 Release Notes 补充 Pull Request、贡献者和比较链接。
 
 ## 权限与失败处理
