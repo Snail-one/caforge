@@ -29,11 +29,14 @@ type Repository interface {
 	Init() error
 	Root() string
 	CreateAuthority(domain.Authority, []byte, []byte) error
+	SaveAuthority(domain.Authority) error
+	DeleteAuthority(string) error
 	LoadAuthority(string) (domain.Authority, error)
 	ListAuthorities() ([]domain.Authority, error)
 	ReadCACertificate(string) ([]byte, error)
 	ReadCAKey(string) ([]byte, error)
 	SetCurrentCA(string) error
+	ClearCurrentCA() error
 	CurrentCA() (string, error)
 	WithCA(string, func(*Transaction) error) error
 	ReadIndex(string) ([]IndexEntry, error)
@@ -121,6 +124,57 @@ func (s *Store) CreateAuthority(a domain.Authority, certPEM, keyPEM []byte) erro
 	return nil
 }
 
+func (s *Store) SaveAuthority(a domain.Authority) error {
+	dir, err := s.CADir(a.ID)
+	if err != nil {
+		return err
+	}
+	if _, err = os.Stat(dir); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(a, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeAtomic(filepath.Join(dir, "ca.json"), append(data, '\n'), 0600)
+}
+
+func (s *Store) DeleteAuthority(id string) error {
+	dir, err := s.CADir(id)
+	if err != nil {
+		return err
+	}
+	if _, err = s.LoadAuthority(id); err != nil {
+		return err
+	}
+	authorities, err := s.ListAuthorities()
+	if err != nil {
+		return err
+	}
+	for _, item := range authorities {
+		if item.ParentID == id {
+			return fmt.Errorf("CA 仍有下级中间 CA：%s", item.Name)
+		}
+	}
+	issued, err := s.ListCertificates(id)
+	if err != nil {
+		return err
+	}
+	if len(issued) != 0 {
+		return fmt.Errorf("CA 仍有 %d 条签发记录", len(issued))
+	}
+	current, err := s.CurrentCA()
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if current == id {
+		if err = s.ClearCurrentCA(); err != nil {
+			return err
+		}
+	}
+	return os.RemoveAll(dir)
+}
+
 func opensslConfig(dir string) string {
 	return fmt.Sprintf(`[ ca ]
 default_ca = CA_default
@@ -203,6 +257,13 @@ func (s *Store) SetCurrentCA(id string) error {
 		return err
 	}
 	return writeAtomic(filepath.Join(s.root, "current_ca"), []byte(id+"\n"), 0600)
+}
+func (s *Store) ClearCurrentCA() error {
+	err := os.Remove(filepath.Join(s.root, "current_ca"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 func (s *Store) CurrentCA() (string, error) {
 	b, err := os.ReadFile(filepath.Join(s.root, "current_ca"))

@@ -1,10 +1,12 @@
 package authority
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"math/big"
 	"regexp"
 	"strings"
@@ -26,6 +28,11 @@ type CreateIntermediateRequest struct {
 	Algorithm                domain.Algorithm
 	Days                     int
 	ParentPassword, Password []byte
+}
+type PublicMaterials struct {
+	CertificatePEM []byte
+	ChainPEM       []byte
+	RootCAPEM      []byte
 }
 type Service struct {
 	repo store.Repository
@@ -96,6 +103,9 @@ func (s *Service) CreateIntermediate(req CreateIntermediateRequest) (domain.Auth
 	}
 	if !parent.IsRoot() {
 		return zero, errors.New("首版仅支持一层中间 CA")
+	}
+	if err = s.Usable(parent.ID); err != nil {
+		return zero, fmt.Errorf("父 CA 不可用于签发: %w", err)
 	}
 	if req.Algorithm == "" {
 		req.Algorithm = domain.ECDSAP384
@@ -177,18 +187,139 @@ func (s *Service) Get(id string) (domain.Authority, *x509.Certificate, error) {
 	c, e := pki.ParseCertificate(b)
 	return a, c, e
 }
-func (s *Service) Select(id string) error   { return s.repo.SetCurrentCA(id) }
+func (s *Service) Select(id string) error {
+	if err := s.Usable(id); err != nil {
+		return fmt.Errorf("不能选择不可用的签发 CA: %w", err)
+	}
+	return s.repo.SetCurrentCA(id)
+}
 func (s *Service) Current() (string, error) { return s.repo.CurrentCA() }
+
+func (s *Service) Status(id string) (string, error) {
+	a, err := s.repo.LoadAuthority(id)
+	if err != nil {
+		return "", err
+	}
+	if a.IsRoot() {
+		if a.Disabled {
+			return "已停用", nil
+		}
+		if !s.now().Before(a.NotAfter) {
+			return "已过期", nil
+		}
+		return "可用", nil
+	}
+	entries, err := s.repo.ReadIndex(a.ParentID)
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries {
+		if entry.Serial != a.IssuerSerial {
+			continue
+		}
+		switch entry.Status {
+		case 'R':
+			return "已吊销", nil
+		case 'E':
+			return "已过期", nil
+		case 'V':
+			if a.Disabled {
+				return "已停用", nil
+			}
+			if !s.now().Before(a.NotAfter) {
+				return "已过期", nil
+			}
+			parentStatus, statusErr := s.Status(a.ParentID)
+			if statusErr != nil {
+				return "", statusErr
+			}
+			if parentStatus != "可用" {
+				return "父 CA " + parentStatus, nil
+			}
+			return "可用", nil
+		default:
+			return "状态未知", nil
+		}
+	}
+	return "签发记录缺失", nil
+}
+
+func (s *Service) SetDisabled(id string, disabled bool) error {
+	return s.repo.WithCA(id, func(*store.Transaction) error {
+		a, err := s.repo.LoadAuthority(id)
+		if err != nil {
+			return err
+		}
+		a.Disabled = disabled
+		return s.repo.SaveAuthority(a)
+	})
+}
+
+func (s *Service) Delete(id string) error {
+	return s.repo.DeleteAuthority(id)
+}
+
+func (s *Service) PublicMaterials(id string) (PublicMaterials, error) {
+	var materials PublicMaterials
+	var certificates []*x509.Certificate
+	seen := map[string]bool{}
+	current := id
+	for current != "" {
+		if seen[current] {
+			return materials, errors.New("CA 父级关系形成循环")
+		}
+		seen[current] = true
+		a, err := s.repo.LoadAuthority(current)
+		if err != nil {
+			return materials, err
+		}
+		certificatePEM, err := s.repo.ReadCACertificate(current)
+		if err != nil {
+			return materials, err
+		}
+		certificate, err := pki.ParseCertificate(certificatePEM)
+		if err != nil {
+			return materials, err
+		}
+		certificates = append(certificates, certificate)
+		if len(certificates) > 1 {
+			child := certificates[len(certificates)-2]
+			if err = child.CheckSignatureFrom(certificate); err != nil {
+				return materials, fmt.Errorf("CA 证书链签名验证失败: %w", err)
+			}
+		}
+		if materials.CertificatePEM == nil {
+			materials.CertificatePEM = append([]byte(nil), certificatePEM...)
+		}
+		materials.ChainPEM = append(materials.ChainPEM, certificatePEM...)
+		materials.RootCAPEM = append([]byte(nil), certificatePEM...)
+		current = a.ParentID
+	}
+	if len(certificates) == 0 {
+		return materials, errors.New("CA 证书链为空")
+	}
+	root := certificates[len(certificates)-1]
+	if !bytes.Equal(root.RawSubject, root.RawIssuer) || root.CheckSignatureFrom(root) != nil {
+		return materials, errors.New("CA 证书链末项不是有效的自签名根 CA")
+	}
+	return materials, nil
+}
 
 func (s *Service) Usable(id string) error {
 	a, err := s.repo.LoadAuthority(id)
 	if err != nil {
 		return err
 	}
+	if a.Disabled {
+		return errors.New("CA 已停用")
+	}
 	if !s.now().Before(a.NotAfter) {
 		return errors.New("CA 已过期")
 	}
 	if a.ParentID != "" {
+		if err = s.Usable(a.ParentID); err != nil {
+			return fmt.Errorf("父 CA 不可用: %w", err)
+		}
 		entries, err := s.repo.ReadIndex(a.ParentID)
 		if err != nil {
 			return err

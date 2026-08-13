@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"caforge/internal/authority"
 	"caforge/internal/certificate"
 	"caforge/internal/domain"
 	"caforge/internal/store"
@@ -213,9 +214,22 @@ type authorityListService struct {
 	AuthorityService
 	items       []domain.Authority
 	certificate *x509.Certificate
+	materials   authority.PublicMaterials
+	status      string
 }
 
 func (s authorityListService) List() ([]domain.Authority, error) { return s.items, nil }
+func (s authorityListService) Status(string) (string, error) {
+	if s.status == "" {
+		return "可用", nil
+	}
+	return s.status, nil
+}
+func (s authorityListService) SetDisabled(string, bool) error { return nil }
+func (s authorityListService) Delete(string) error            { return nil }
+func (s authorityListService) PublicMaterials(string) (authority.PublicMaterials, error) {
+	return s.materials, nil
+}
 func (s authorityListService) Get(id string) (domain.Authority, *x509.Certificate, error) {
 	for _, item := range s.items {
 		if item.ID == id {
@@ -316,8 +330,9 @@ func TestAuthorityListShowsWhichRootIssuedIntermediate(t *testing.T) {
 	}
 	var out bytes.Buffer
 	a := &App{
-		ui:          ui.New(strings.NewReader("2\n\n"), &out, false, nil),
-		authorities: authorityListService{items: items, certificate: certificate},
+		ui:           ui.New(strings.NewReader("2\n0\n"), &out, false, nil),
+		authorities:  authorityListService{items: items, certificate: certificate},
+		certificates: exportCertificateService{},
 	}
 	if err := a.showAuthorities(); err != nil {
 		t.Fatal(err)
@@ -336,6 +351,80 @@ func TestAuthorityListShowsWhichRootIssuedIntermediate(t *testing.T) {
 	}
 	if strings.Contains(got, "[当前]") {
 		t.Fatalf("CA 层级列表不应显示当前标记：\n%s", got)
+	}
+}
+
+func TestAuthorityCertificateViewsOnlyPublicPEM(t *testing.T) {
+	materials := authority.PublicMaterials{
+		CertificatePEM: []byte("-----BEGIN CERTIFICATE-----\nINTERMEDIATE\n-----END CERTIFICATE-----\n"),
+		ChainPEM: []byte("-----BEGIN CERTIFICATE-----\nINTERMEDIATE\n-----END CERTIFICATE-----\n" +
+			"-----BEGIN CERTIFICATE-----\nROOT\n-----END CERTIFICATE-----\n"),
+		RootCAPEM: []byte("-----BEGIN CERTIFICATE-----\nROOT\n-----END CERTIFICATE-----\n"),
+	}
+	meta := domain.Authority{ID: "issuing-ca", Name: "Issuing CA", ParentID: "root-ca"}
+	for _, fullChain := range []bool{false, true} {
+		var out bytes.Buffer
+		a := &App{
+			ui:          ui.New(strings.NewReader("\n"), &out, false, nil),
+			authorities: authorityListService{materials: materials},
+		}
+		if err := a.showAuthorityCertificate(meta, fullChain); err != nil {
+			t.Fatal(err)
+		}
+		got := out.String()
+		if !strings.Contains(got, "INTERMEDIATE") || strings.Contains(got, "PRIVATE KEY") {
+			t.Fatalf("CA 公开证书显示异常：\n%s", got)
+		}
+		if fullChain && (!strings.Contains(got, "当前 CA → 根 CA") || !strings.Contains(got, "ROOT")) {
+			t.Fatalf("完整 CA 链显示异常：\n%s", got)
+		}
+	}
+}
+
+func TestRevokeIntermediateUsesParentRootAndStrictConfirmation(t *testing.T) {
+	root := domain.Authority{ID: "root-ca", Name: "Root CA"}
+	intermediate := domain.Authority{ID: "issuing-ca", Name: "Issuing CA", ParentID: root.ID, IssuerSerial: "1000"}
+	certificate := &x509.Certificate{SerialNumber: big.NewInt(4096), NotBefore: time.Now(), NotAfter: time.Now().AddDate(1, 0, 0)}
+	for _, test := range []struct {
+		name         string
+		confirmation string
+		wantCalls    int
+	}{
+		{name: "yes", confirmation: "yes", wantCalls: 1},
+		{name: "reject chinese yes", confirmation: "是", wantCalls: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var out bytes.Buffer
+			revocations := &captureRevocationService{}
+			input := "3\n" + test.confirmation + "\n"
+			if test.wantCalls == 1 {
+				input += "root-secret\n\n"
+			}
+			a := &App{
+				ui:          ui.New(strings.NewReader(input), &out, false, nil),
+				authorities: authorityListService{items: []domain.Authority{root, intermediate}, certificate: certificate},
+				revocations: revocations,
+			}
+			err := a.revokeIntermediate(intermediate, 4)
+			if test.wantCalls == 0 && !errors.Is(err, errCancelled) {
+				t.Fatalf("err=%v, want cancellation", err)
+			}
+			if test.wantCalls == 1 && err != nil {
+				t.Fatal(err)
+			}
+			if revocations.calls != test.wantCalls {
+				t.Fatalf("revoke calls=%d, want %d", revocations.calls, test.wantCalls)
+			}
+			if test.wantCalls == 1 && (revocations.ca != root.ID || revocations.serial != intermediate.IssuerSerial || revocations.reason != domain.CACompromise) {
+				t.Fatalf("unexpected revoke call: %#v", revocations)
+			}
+			got := out.String()
+			for _, want := range []string{"父根 CA：Root CA（root-ca）", "已有 4 条签发记录", "父根 CA 的 PEM/DER CRL"} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("中间 CA 吊销界面缺少 %q：\n%s", want, got)
+				}
+			}
+		})
 	}
 }
 

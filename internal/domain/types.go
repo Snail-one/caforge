@@ -32,6 +32,7 @@ type Authority struct {
 	NotAfter     time.Time `json:"not_after"`
 	MaxPathLen   int       `json:"max_path_len"`
 	DefaultDays  int       `json:"default_days"`
+	Disabled     bool      `json:"disabled,omitempty"`
 }
 
 func (a Authority) IsRoot() bool { return a.ParentID == "" }

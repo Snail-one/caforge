@@ -42,6 +42,10 @@ type AuthorityService interface {
 	List() ([]domain.Authority, error)
 	Get(string) (domain.Authority, *x509.Certificate, error)
 	Select(string) error
+	Status(string) (string, error)
+	SetDisabled(string, bool) error
+	Delete(string) error
+	PublicMaterials(string) (authority.PublicMaterials, error)
 }
 
 type CertificateService interface {
@@ -270,11 +274,11 @@ func (a *App) showAuthorities() error {
 		}
 		displayed = append(displayed, root)
 		rendered[root.ID] = true
-		a.ui.MenuOptionStatusHint(strconv.Itoa(len(displayed)), root.Name, a.ui.LabelBadge("根 CA", true), root.ID+" · 自签名 · 到期 "+root.NotAfter.Local().Format("2006-01-02"))
+		a.ui.MenuOptionStatusHint(strconv.Itoa(len(displayed)), root.Name, a.authorityBadges(root), root.ID+" · 自签名 · 到期 "+root.NotAfter.Local().Format("2006-01-02"))
 		for index, child := range children[root.ID] {
 			displayed = append(displayed, child)
 			rendered[child.ID] = true
-			a.ui.MenuChildOptionStatusHint(strconv.Itoa(len(displayed)), child.Name, a.ui.LabelBadge("中间 CA", true), child.ID+" · 到期 "+child.NotAfter.Local().Format("2006-01-02"), index == len(children[root.ID])-1)
+			a.ui.MenuChildOptionStatusHint(strconv.Itoa(len(displayed)), child.Name, a.authorityBadges(child), child.ID+" · 到期 "+child.NotAfter.Local().Format("2006-01-02"), index == len(children[root.ID])-1)
 		}
 	}
 	for _, item := range items {
@@ -290,23 +294,126 @@ func (a *App) showAuthorities() error {
 	if e != nil {
 		return e
 	}
-	v, c, e := a.authorities.Get(displayed[n-1].ID)
-	if e != nil {
-		return e
+	return a.authorityActions(displayed[n-1].ID, names)
+}
+
+func (a *App) authorityBadges(item domain.Authority) string {
+	kind := "中间 CA"
+	if item.IsRoot() {
+		kind = "根 CA"
 	}
-	a.ui.Printf("\n")
-	a.ui.PrintInfoCard("CA 详情",
-		ui.CardField{Label: "ID", Value: v.ID},
-		ui.CardField{Label: "名称", Value: v.Name},
-		ui.CardField{Label: "证书链层级", Value: authorityHierarchyDisplay(v, names)},
-		ui.CardField{Label: "父 CA", Value: parentAuthorityDisplay(v, names)},
-		ui.CardField{Label: "算法", Value: string(v.Algorithm)},
-		ui.CardField{Label: "序列号", Value: c.SerialNumber.Text(16)},
-		ui.CardField{Label: "有效期", Value: c.NotBefore.Local().Format(time.RFC3339) + " — " + c.NotAfter.Local().Format(time.RFC3339)},
-		ui.CardField{Label: "路径长度", Value: strconv.Itoa(v.MaxPathLen)},
-	)
-	a.ui.Pause()
-	return nil
+	badges := a.ui.LabelBadge(kind, true)
+	status, err := a.authorities.Status(item.ID)
+	if err == nil && status != "可用" {
+		badges += " " + a.ui.LabelBadge(status, false)
+	}
+	return badges
+}
+
+func (a *App) authorityActions(id string, names map[string]string) error {
+	for {
+		meta, certificate, err := a.authorities.Get(id)
+		if err != nil {
+			return err
+		}
+		status, err := a.authorities.Status(id)
+		if err != nil {
+			return err
+		}
+		issued, err := a.certificates.List(id)
+		if err != nil {
+			return err
+		}
+		authorities, err := a.authorities.List()
+		if err != nil {
+			return err
+		}
+		children := 0
+		for _, item := range authorities {
+			if item.ParentID == id {
+				children++
+			}
+		}
+
+		a.ui.Header("主菜单 / CA 管理 / " + meta.Name)
+		a.ui.PrintInfoCard("CA 详情",
+			ui.CardField{Label: "状态", Value: status},
+			ui.CardField{Label: "ID", Value: meta.ID},
+			ui.CardField{Label: "名称", Value: meta.Name},
+			ui.CardField{Label: "证书链层级", Value: authorityHierarchyDisplay(meta, names)},
+			ui.CardField{Label: "父 CA", Value: parentAuthorityDisplay(meta, names)},
+			ui.CardField{Label: "算法", Value: string(meta.Algorithm)},
+			ui.CardField{Label: "序列号", Value: strings.ToUpper(certificate.SerialNumber.Text(16))},
+			ui.CardField{Label: "有效期", Value: certificate.NotBefore.Local().Format(time.RFC3339) + " — " + certificate.NotAfter.Local().Format(time.RFC3339)},
+			ui.CardField{Label: "下级 CA", Value: fmt.Sprintf("%d 个", children)},
+			ui.CardField{Label: "签发记录", Value: fmt.Sprintf("%d 条", len(issued))},
+		)
+		a.ui.Printf("\n")
+		a.ui.MenuOptionHint("1", "查看 CA 证书", "显示并复制公开 PEM，不包含 CA 私钥")
+		a.ui.MenuOptionHint("2", "查看完整 CA 链", "按当前 CA → 根 CA 顺序显示公开 PEM")
+		a.ui.MenuOptionHint("3", "查看签发记录", "查看该 CA 签发的中间、服务器和客户端证书")
+		if meta.Disabled {
+			a.ui.MenuOptionHint("4", "重新启用 CA", "恢复本地签发能力；不能撤销证书吊销")
+		} else {
+			a.ui.MenuOptionHint("4", "停用 CA", "禁止该 CA 及其下级继续签发，保留全部数据")
+		}
+		if meta.IsRoot() {
+			a.ui.MenuOptionStatusHint("5", "吊销中间 CA", a.ui.LabelBadge("不适用", false), "根 CA 没有父 CA，只能停用或从信任库移除")
+		} else if status == "已吊销" {
+			a.ui.MenuOptionStatusHint("5", "吊销中间 CA", a.ui.LabelBadge("已吊销", false), "吊销不可撤销")
+		} else {
+			a.ui.MenuOptionHint("5", "吊销中间 CA", "由父根 CA 吊销并立即更新父根 CA 的 CRL")
+		}
+		if children == 0 && len(issued) == 0 {
+			a.ui.MenuOptionHint("6", "删除空 CA", "永久删除本地 CA 目录；父 CA 的历史签发记录保留")
+		} else {
+			a.ui.MenuOptionStatusHint("6", "删除空 CA", a.ui.LabelBadge("不可用", false), "仍有下级 CA 或签发记录")
+		}
+		a.ui.MenuExit("0/q", "返回")
+		a.ui.Printf("\n")
+		choice, err := a.ui.Ask("请选择: ")
+		if err != nil {
+			return err
+		}
+		switch strings.ToLower(choice) {
+		case "1":
+			err = a.showAuthorityCertificate(meta, false)
+		case "2":
+			err = a.showAuthorityCertificate(meta, true)
+		case "3":
+			err = a.showAuthorityIssued(meta, issued)
+		case "4":
+			err = a.setAuthorityDisabled(meta, !meta.Disabled, len(issued), children)
+		case "5":
+			if meta.IsRoot() {
+				a.ui.Warning("根 CA 没有父 CA，不能通过上级吊销；请使用停用功能")
+				break
+			}
+			if status == "已吊销" {
+				a.ui.Warning("该中间 CA 已被吊销，吊销不可撤销")
+				break
+			}
+			err = a.revokeIntermediate(meta, len(issued))
+		case "6":
+			if children != 0 || len(issued) != 0 {
+				a.ui.Warning("只有没有下级 CA 且没有签发记录的 CA 才能删除")
+				break
+			}
+			deleted, deleteErr := a.deleteAuthority(meta)
+			err = deleteErr
+			if deleted {
+				return nil
+			}
+		case "0", "q", "exit":
+			return nil
+		default:
+			a.ui.InvalidChoice()
+		}
+		if err != nil && !errors.Is(err, errCancelled) {
+			a.ui.Error(err)
+			a.ui.Pause()
+		}
+	}
 }
 
 func authorityNameAndID(id string, names map[string]string) string {
@@ -332,6 +439,181 @@ func authorityHierarchyDisplay(authority domain.Authority, names map[string]stri
 		parent = authority.ParentID
 	}
 	return parent + "（根 CA） → " + authority.Name + "（中间 CA）"
+}
+
+func (a *App) showAuthorityCertificate(meta domain.Authority, fullChain bool) error {
+	materials, err := a.authorities.PublicMaterials(meta.ID)
+	if err != nil {
+		return err
+	}
+	title := "查看 CA 证书"
+	section := "CA 公开证书"
+	filename := "ca.cert.pem"
+	purpose := "可公开分发；不包含 CA 私钥"
+	contents := materials.CertificatePEM
+	if fullChain {
+		title = "查看完整 CA 链"
+		section = "完整 CA 证书链"
+		filename = "ca-chain.pem"
+		purpose = "顺序为当前 CA → 根 CA；只包含公开证书"
+		contents = materials.ChainPEM
+	}
+	a.ui.Header("主菜单 / CA 管理 / " + meta.Name + " / " + title)
+	a.ui.PrintInfoCard(section,
+		ui.CardField{Label: "建议文件名", Value: filename},
+		ui.CardField{Label: "用途", Value: purpose},
+		ui.CardField{Label: "安全", Value: a.ui.LabelBadge("不含私钥", true)},
+	)
+	a.ui.Printf("\n%s", contents)
+	a.ui.Pause()
+	return nil
+}
+
+func (a *App) showAuthorityIssued(meta domain.Authority, issued []domain.Certificate) error {
+	a.ui.Header("主菜单 / CA 管理 / " + meta.Name + " / 签发记录")
+	if len(issued) == 0 {
+		a.ui.PrintInfoCard("签发记录", ui.CardField{Label: "数量", Value: "0 条"}, ui.CardField{Label: "状态", Value: "该 CA 尚未签发任何证书"})
+		a.ui.Pause()
+		return nil
+	}
+	for index, item := range issued {
+		_, _, status, err := a.certificates.Get(meta.ID, item.Serial)
+		if err != nil {
+			return err
+		}
+		a.ui.MenuOptionStatusHint(strconv.Itoa(index+1), item.CommonName, a.ui.Badge(status), item.Serial+" · "+string(item.Profile))
+	}
+	a.ui.Printf("\n")
+	a.ui.PrintInfoCard("记录说明",
+		ui.CardField{Label: "总数", Value: fmt.Sprintf("%d 条", len(issued))},
+		ui.CardField{Label: "审计", Value: "签发记录不会因停用或吊销 CA 自动删除"},
+	)
+	a.ui.Pause()
+	return nil
+}
+
+func (a *App) setAuthorityDisabled(meta domain.Authority, disabled bool, issued, children int) error {
+	a.ui.Header("主菜单 / CA 管理 / " + meta.Name + " / 状态管理")
+	action := "重新启用"
+	impact := "恢复本地签发能力；如果中间 CA 已被父根 CA 吊销，仍然不能签发"
+	if disabled {
+		action = "停用"
+		impact = "该 CA 将禁止继续签发；下级中间 CA 也会停止签发，已有证书和数据保持不变"
+	}
+	a.ui.PrintDangerCard("确认"+action+" CA",
+		ui.CardField{Label: "CA", Value: meta.Name + "（" + meta.ID + "）"},
+		ui.CardField{Label: "签发记录", Value: fmt.Sprintf("%d 条", issued)},
+		ui.CardField{Label: "下级 CA", Value: fmt.Sprintf("%d 个", children)},
+		ui.CardField{Label: "影响", Value: impact},
+	)
+	confirmed, err := a.askYes("确认" + action + "？请输入 y 或 yes，其他输入取消: ")
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		return errCancelled
+	}
+	if err = a.authorities.SetDisabled(meta.ID, disabled); err != nil {
+		return err
+	}
+	a.ui.PrintSuccessCard("CA 已"+action,
+		ui.CardField{Label: "名称", Value: meta.Name},
+		ui.CardField{Label: "数据", Value: "全部保留"},
+	)
+	a.ui.Pause()
+	return nil
+}
+
+func (a *App) revokeIntermediate(meta domain.Authority, issued int) error {
+	parent, _, err := a.authorities.Get(meta.ParentID)
+	if err != nil {
+		return err
+	}
+	a.ui.Header("主菜单 / CA 管理 / " + meta.Name + " / 吊销中间 CA")
+	reasons := revocation.Reasons()
+	for index, reason := range reasons {
+		a.ui.MenuOptionHint(strconv.Itoa(index+1), reason.Label, revocationReasonHint(reason.Value))
+	}
+	a.ui.MenuExit("0/q", "返回")
+	a.ui.Printf("\n")
+	reasonIndex, err := a.askIndex("选择吊销原因（推荐 CA 泄露，0 返回）: ", len(reasons))
+	if err != nil {
+		return err
+	}
+	reason := reasons[reasonIndex-1]
+	a.ui.Printf("\n")
+	a.ui.PrintDangerCard("确认永久吊销中间 CA",
+		ui.CardField{Label: "中间 CA", Value: meta.Name + "（" + meta.ID + "）"},
+		ui.CardField{Label: "父根 CA", Value: parent.Name + "（" + parent.ID + "）"},
+		ui.CardField{Label: "吊销原因", Value: reason.Label},
+		ui.CardField{Label: "影响范围", Value: fmt.Sprintf("该中间 CA 已有 %d 条签发记录", issued)},
+		ui.CardField{Label: "不可撤销", Value: "立即禁止继续签发，并更新父根 CA 的 PEM/DER CRL"},
+		ui.CardField{Label: "验证要求", Value: "验证方必须检查父根 CA 的 CRL 才能识别本次吊销"},
+	)
+	confirmed, err := a.askYes("确认永久吊销？请输入 y 或 yes，其他输入取消: ")
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		return errCancelled
+	}
+	password, err := a.ui.Password("父根 CA 私钥口令: ")
+	if err != nil {
+		return err
+	}
+	if err = a.revocations.Revoke(parent.ID, meta.IssuerSerial, reason.Value, password); err != nil {
+		return err
+	}
+	a.ui.PrintDangerCard("中间 CA 已吊销",
+		ui.CardField{Label: "名称", Value: meta.Name},
+		ui.CardField{Label: "签发序列号", Value: meta.IssuerSerial},
+		ui.CardField{Label: "父根 CA CRL", Value: "PEM 和 DER 已立即更新"},
+		ui.CardField{Label: "签发能力", Value: a.ui.LabelBadge("已永久禁止", false)},
+	)
+	a.ui.Pause()
+	return nil
+}
+
+func (a *App) deleteAuthority(meta domain.Authority) (bool, error) {
+	a.ui.Header("主菜单 / CA 管理 / " + meta.Name + " / 删除空 CA")
+	a.ui.PrintDangerCard("永久删除空 CA",
+		ui.CardField{Label: "名称", Value: meta.Name},
+		ui.CardField{Label: "CA ID", Value: meta.ID},
+		ui.CardField{Label: "删除内容", Value: "本地 CA 证书、加密私钥、索引、序列号和 CRL 目录"},
+		ui.CardField{Label: "保留内容", Value: "父 CA 中已经存在的历史签发记录"},
+		ui.CardField{Label: "不可恢复", Value: "删除后只能从独立备份恢复"},
+	)
+	confirmation, err := a.ui.Ask("请输入 CA 名称“" + meta.Name + "”确认删除，其他输入取消: ")
+	if err != nil {
+		return false, err
+	}
+	if confirmation != meta.Name {
+		a.ui.Warning("CA 名称不匹配，未删除任何数据")
+		return false, errCancelled
+	}
+	if err = a.authorities.Delete(meta.ID); err != nil {
+		return false, err
+	}
+	a.ui.PrintDangerCard("空 CA 已删除",
+		ui.CardField{Label: "名称", Value: meta.Name},
+		ui.CardField{Label: "CA ID", Value: meta.ID},
+		ui.CardField{Label: "恢复", Value: "只能使用删除前的独立备份"},
+	)
+	a.ui.Pause()
+	return true, nil
+}
+
+func (a *App) askYes(prompt string) (bool, error) {
+	answer, err := a.ui.Ask(prompt)
+	if err != nil {
+		return false, err
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	if answer != "y" && answer != "yes" {
+		a.ui.Warning("未输入 y 或 yes，操作已取消")
+		return false, nil
+	}
+	return true, nil
 }
 
 func (a *App) selectAuthority() error {
