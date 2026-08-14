@@ -246,41 +246,48 @@ func (a *App) createIntermediate() error {
 	return e
 }
 func (a *App) showAuthorities() error {
-	a.ui.Header("主菜单 / CA 管理 / CA 列表")
-	items, e := a.authorities.List()
-	if e != nil {
-		return e
-	}
-	if len(items) == 0 {
-		a.ui.Warning("尚未创建 CA")
-		a.ui.Pause()
-		return nil
-	}
-	names := make(map[string]string, len(items))
-	for _, item := range items {
-		names[item.ID] = item.Name
-	}
-	displayed := make([]domain.Authority, 0, len(items))
-	for _, node := range authorityTree(items) {
-		displayed = append(displayed, node.Authority)
-		key := strconv.Itoa(len(displayed))
-		if node.Child {
-			a.ui.MenuChildOptionStatusHint(key, node.Authority.Name, a.authorityBadges(node.Authority), node.Authority.ID+" · 到期 "+node.Authority.NotAfter.Local().Format("2006-01-02"), node.LastChild)
-			continue
+	for {
+		a.ui.Header("主菜单 / CA 管理 / CA 列表")
+		items, e := a.authorities.List()
+		if e != nil {
+			return e
 		}
-		if node.Orphan {
-			a.ui.MenuOptionStatusHint(key, node.Authority.Name, a.ui.LabelBadge("父 CA 缺失", false), node.Authority.ID+" · 父 CA "+node.Authority.ParentID)
-			continue
+		if len(items) == 0 {
+			a.ui.Warning("尚未创建 CA")
+			a.ui.Pause()
+			return nil
 		}
-		a.ui.MenuOptionStatusHint(key, node.Authority.Name, a.authorityBadges(node.Authority), node.Authority.ID+" · 自签名 · 到期 "+node.Authority.NotAfter.Local().Format("2006-01-02"))
+		names := make(map[string]string, len(items))
+		for _, item := range items {
+			names[item.ID] = item.Name
+		}
+		displayed := make([]domain.Authority, 0, len(items))
+		for _, node := range authorityTree(items) {
+			displayed = append(displayed, node.Authority)
+			key := strconv.Itoa(len(displayed))
+			if node.Child {
+				a.ui.MenuChildOptionStatusHint(key, node.Authority.Name, a.authorityBadges(node.Authority), node.Authority.ID+" · 到期 "+node.Authority.NotAfter.Local().Format("2006-01-02"), node.LastChild)
+				continue
+			}
+			if node.Orphan {
+				a.ui.MenuOptionStatusHint(key, node.Authority.Name, a.ui.LabelBadge("父 CA 缺失", false), node.Authority.ID+" · 父 CA "+node.Authority.ParentID)
+				continue
+			}
+			a.ui.MenuOptionStatusHint(key, node.Authority.Name, a.authorityBadges(node.Authority), node.Authority.ID+" · 自签名 · 到期 "+node.Authority.NotAfter.Local().Format("2006-01-02"))
+		}
+		a.ui.MenuExit("0/q", "返回")
+		a.ui.Printf("\n")
+		n, e := a.askIndex("输入编号查看详情，0 返回: ", len(displayed))
+		if e != nil {
+			if errors.Is(e, errCancelled) {
+				return nil
+			}
+			return e
+		}
+		if e = a.authorityActions(displayed[n-1].ID, names); e != nil && !errors.Is(e, errCancelled) {
+			return e
+		}
 	}
-	a.ui.MenuExit("0/q", "返回")
-	a.ui.Printf("\n")
-	n, e := a.askIndex("输入编号查看详情，0 返回: ", len(displayed))
-	if e != nil {
-		return e
-	}
-	return a.authorityActions(displayed[n-1].ID, names)
 }
 
 func (a *App) authorityBadges(item domain.Authority) string {

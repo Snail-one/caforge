@@ -415,7 +415,7 @@ func TestAuthorityListShowsWhichRootIssuedIntermediate(t *testing.T) {
 	}
 	var out bytes.Buffer
 	a := &App{
-		ui:           ui.New(strings.NewReader("2\n0\n"), &out, false, nil),
+		ui:           ui.New(strings.NewReader("2\n0\n0\n"), &out, false, nil),
 		authorities:  authorityListService{items: items, certificate: certificate},
 		certificates: exportCertificateService{},
 	}
@@ -436,6 +436,9 @@ func TestAuthorityListShowsWhichRootIssuedIntermediate(t *testing.T) {
 	}
 	if strings.Contains(got, "[当前]") {
 		t.Fatalf("CA 层级列表不应显示当前标记：\n%s", got)
+	}
+	if strings.Count(got, "CAForge  ›  CA 管理  ›  CA 列表") < 2 {
+		t.Fatalf("从 CA 详情返回应回到 CA 列表：\n%s", got)
 	}
 }
 
