@@ -74,6 +74,55 @@ func TestChildMenuOptionUsesTreeBranch(t *testing.T) {
 	}
 }
 
+func TestMenuGroupKeepsCurrentBadgeOnTheRight(t *testing.T) {
+	var out bytes.Buffer
+	term := New(strings.NewReader(""), &out, false, nil)
+	term.MenuGroup("测试  ›  测试-01", "[当前]")
+	term.MenuGroup("FCA-02  ›  FCA-02-ZJ-01", "")
+
+	got := out.String()
+	for _, want := range []string{"测试  ›  测试-01", "[当前]", "FCA-02  ›  FCA-02-ZJ-01"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("分组标题缺少 %q：\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "[根 CA]") || strings.Contains(got, "[中间 CA]") {
+		t.Fatalf("分组标题不应带类型徽标：\n%s", got)
+	}
+}
+
+func TestMenuTreeStatusHintNestsCertificatesAndAlignsHints(t *testing.T) {
+	var out bytes.Buffer
+	term := New(strings.NewReader(""), &out, false, nil)
+	term.MenuTreeStatusHint(nil, "", "测试", "[根 CA]", "ca-root")
+	term.MenuTreeStatusHint([]bool{false}, "", "测试-01", "[当前]", "ca-int")
+	term.MenuTreeStatusHint([]bool{false, true}, "1", "fwq", "[有效]", "1000 · server")
+	term.MenuTreeStatusHint([]bool{true}, "", "FCA-02", "", "ca-fca")
+
+	got := out.String()
+	for _, want := range []string{"测试", "├─ 测试-01", "│", "└─ 1", "fwq", "└─ FCA-02"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("证书树形菜单缺少 %q：\n%s", want, got)
+		}
+	}
+	var cols []int
+	for _, line := range strings.Split(strings.TrimSuffix(got, "\n"), "\n") {
+		index := strings.Index(line, "-- ")
+		if index < 0 {
+			continue
+		}
+		cols = append(cols, displayWidth(line[:index]))
+	}
+	if len(cols) != 4 {
+		t.Fatalf("证书树 hint 列数=%d：\n%s", len(cols), got)
+	}
+	for _, col := range cols[1:] {
+		if col != cols[0] {
+			t.Fatalf("证书树 -- 列未对齐：\n%s", got)
+		}
+	}
+}
+
 func TestCardsAndPromptFollowTargetStyle(t *testing.T) {
 	var out bytes.Buffer
 	term := New(strings.NewReader("yes\n"), &out, true, nil)

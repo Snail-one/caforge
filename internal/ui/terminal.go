@@ -152,12 +152,70 @@ func (t *Terminal) MenuChildOptionStatusHint(key, label, status, hint string, la
 	fmt.Fprintf(t.out, "     %s %s %s%s%s\n", t.paint(gray, branch), t.menuKey(key, bold+blue), t.padDisplay(label, 12), t.padDisplay(status, 16), t.paint(gray, "-- "+hint))
 }
 
+func (t *Terminal) MenuTreeStatusHint(path []bool, key, label, status, hint string) {
+	key, label, status, hint = strings.TrimSpace(key), strings.TrimSpace(label), strings.TrimSpace(status), strings.TrimSpace(hint)
+	labelWidth := 18
+	if len(path) > 0 {
+		labelWidth = 12
+	}
+	var line strings.Builder
+	line.WriteString(t.menuTreePrefix(path))
+	if key != "" {
+		line.WriteString(t.menuKey(key, bold+blue))
+		line.WriteString(" ")
+	}
+	line.WriteString(t.padDisplay(label, labelWidth))
+	line.WriteString(t.padDisplay(status, 16))
+	if hint != "" {
+		pad := 44 - displayWidth(line.String())
+		if pad < 1 {
+			pad = 1
+		}
+		line.WriteString(strings.Repeat(" ", pad))
+		line.WriteString(t.paint(gray, "-- "+hint))
+	}
+	fmt.Fprintln(t.out, line.String())
+}
+
+func (t *Terminal) menuTreePrefix(path []bool) string {
+	if len(path) == 0 {
+		return "  "
+	}
+	var prefix strings.Builder
+	prefix.WriteString("     ")
+	for i, last := range path {
+		if i < len(path)-1 {
+			if last {
+				prefix.WriteString("   ")
+			} else {
+				prefix.WriteString(t.paint(gray, "│") + "  ")
+			}
+			continue
+		}
+		branch := "├─"
+		if last {
+			branch = "└─"
+		}
+		prefix.WriteString(t.paint(gray, branch) + " ")
+	}
+	return prefix.String()
+}
+
 func (t *Terminal) MenuExit(key, label string) {
 	fmt.Fprintf(t.out, "  %s %s\n", t.menuKey(key, bold+yellow), t.paint(dim, label))
 }
 
 func (t *Terminal) MenuSection(label string) {
 	fmt.Fprintln(t.out, t.paint(bold, strings.TrimSpace(label)))
+}
+
+func (t *Terminal) MenuGroup(label, status string) {
+	label, status = strings.TrimSpace(label), strings.TrimSpace(status)
+	if status == "" {
+		fmt.Fprintln(t.out, "  "+t.paint(bold, label))
+		return
+	}
+	fmt.Fprintf(t.out, "  %s%s\n", t.padDisplay(t.paint(bold, label), 34), status)
 }
 
 func (t *Terminal) InvalidChoice() {

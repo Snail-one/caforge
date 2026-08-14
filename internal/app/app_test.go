@@ -63,6 +63,7 @@ type exportCertificateService struct {
 	meta      domain.Certificate
 	parsed    *x509.Certificate
 	paths     certificate.FilePaths
+	items     []domain.Certificate
 }
 
 type captureRevocationService struct {
@@ -90,7 +91,18 @@ func (s exportCertificateService) Issue(domain.IssueRequest, []byte) (domain.Cer
 func (s exportCertificateService) SignCSR(domain.CSRRequest, []byte) (domain.Certificate, error) {
 	return domain.Certificate{}, nil
 }
-func (s exportCertificateService) List(string) ([]domain.Certificate, error) { return nil, nil }
+func (s exportCertificateService) List(caID string) ([]domain.Certificate, error) {
+	if len(s.items) == 0 {
+		return nil, nil
+	}
+	var out []domain.Certificate
+	for _, item := range s.items {
+		if caID == "" || item.CAID == "" || item.CAID == caID {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
 func (s exportCertificateService) Get(string, string) (domain.Certificate, *x509.Certificate, byte, error) {
 	return s.meta, s.parsed, 'V', nil
 }
@@ -126,12 +138,19 @@ func TestCertificateDetailsDisplayAbsoluteFilePaths(t *testing.T) {
 		paths: paths,
 	}
 	var out bytes.Buffer
-	a := &App{ui: ui.New(strings.NewReader("0\n"), &out, false, nil), certificates: service}
+	a := &App{
+		ui:           ui.New(strings.NewReader("0\n"), &out, false, nil),
+		repo:         currentCARepository{items: []domain.Authority{{ID: "test-ca", Name: "测试签发", ParentID: "root-ca"}}},
+		certificates: service,
+	}
 	if err := a.certificateActions("test-ca", "1000"); err != nil {
 		t.Fatal(err)
 	}
 
 	got := out.String()
+	if !strings.Contains(got, "签发 CA：测试签发（test-ca）") {
+		t.Fatalf("证书详情缺少签发 CA：\n%s", got)
+	}
 	for label, path := range map[string]string{
 		"记录目录":  base,
 		"证书文件":  paths.Certificate,
@@ -206,9 +225,18 @@ func TestRevokeCertificateRejectsOtherConfirmation(t *testing.T) {
 type currentCARepository struct {
 	Repository
 	current string
+	items   []domain.Authority
 }
 
 func (r currentCARepository) CurrentCA() (string, error) { return r.current, nil }
+func (r currentCARepository) LoadAuthority(id string) (domain.Authority, error) {
+	for _, item := range r.items {
+		if item.ID == id {
+			return item, nil
+		}
+	}
+	return domain.Authority{}, errors.New("未找到 CA")
+}
 
 type authorityListService struct {
 	AuthorityService
@@ -263,6 +291,63 @@ func TestChooseAuthorityDisplaysAndMarksCurrentCA(t *testing.T) {
 	for _, want := range []string{"当前选择", "名称：joker-one", "CA ID：joker-one-3ac2f408", "[当前]", "joker-one-3ac2f408"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("CA 选择界面缺少 %q：\n%s", want, got)
+		}
+	}
+}
+
+func TestChooseAuthorityDisplaysIntermediateTree(t *testing.T) {
+	items := []domain.Authority{
+		{ID: "fca-02-int", Name: "FCA-02-INT", ParentID: "fca-02-498"},
+		{ID: "ca-2073af77", Name: "测试"},
+		{ID: "01-2eb5054f", Name: "测试-01"},
+		{ID: "fca-02-498", Name: "FCA-02"},
+		{ID: "fca-02-int-2", Name: "FCA-02-INT-2", ParentID: "fca-02-498"},
+	}
+	var out bytes.Buffer
+	a := &App{
+		ui:          ui.New(strings.NewReader("4\n"), &out, false, nil),
+		repo:        currentCARepository{current: "ca-2073af77"},
+		authorities: authorityListService{items: items},
+	}
+	selected, err := a.chooseAuthority(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != "fca-02-int" {
+		t.Fatalf("selected=%q, want fca-02-int", selected)
+	}
+
+	got := out.String()
+	for _, want := range []string{
+		"测试", "[当前]", "ca-2073af77",
+		"测试-01", "01-2eb5054f",
+		"FCA-02", "fca-02-498",
+		"├─ 4", "FCA-02-INT", "fca-02-int",
+		"└─ 5", "FCA-02-INT-2", "fca-02-int-2",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("签发 CA 树状列表缺少 %q：\n%s", want, got)
+		}
+	}
+	if strings.Index(got, "FCA-02") > strings.Index(got, "├─ 4") {
+		t.Fatalf("中间 CA 应挂在父根 CA 下方：\n%s", got)
+	}
+	var rootHintCols []int
+	for _, line := range strings.Split(got, "\n") {
+		trimmed := strings.TrimLeft(line, " ")
+		if strings.HasPrefix(trimmed, "├") || strings.HasPrefix(trimmed, "└") {
+			continue
+		}
+		if col := strings.Index(line, "-- "); col >= 0 {
+			rootHintCols = append(rootHintCols, displayColumn(line[:col]))
+		}
+	}
+	if len(rootHintCols) != 3 {
+		t.Fatalf("签发 CA 根行 hint 列数=%d，want 3：\n%s", len(rootHintCols), got)
+	}
+	for _, col := range rootHintCols[1:] {
+		if col != rootHintCols[0] {
+			t.Fatalf("未选中的根 CA 与当前根 CA 的 -- 列未对齐：\n%s", got)
 		}
 	}
 }
@@ -428,6 +513,91 @@ func TestRevokeIntermediateUsesParentRootAndStrictConfirmation(t *testing.T) {
 	}
 }
 
+func TestCertificateMenuGroupsCertificatesByIssuer(t *testing.T) {
+	root := domain.Authority{ID: "joker-536f4a6c", Name: "joker"}
+	issuer := domain.Authority{ID: "joker-one-3ac2f408", Name: "joker-one", ParentID: root.ID}
+	var out bytes.Buffer
+	a := &App{
+		ui: ui.New(strings.NewReader("0\n"), &out, false, nil),
+		repo: currentCARepository{
+			current: issuer.ID,
+			items:   []domain.Authority{root, issuer},
+		},
+		authorities: authorityListService{items: []domain.Authority{root, issuer}},
+		certificates: exportCertificateService{
+			items: []domain.Certificate{
+				{Serial: "1000", CommonName: "fwq", Profile: domain.Server, CAID: issuer.ID},
+				{Serial: "1001", CommonName: "khd", Profile: domain.Client, CAID: issuer.ID},
+			},
+		},
+	}
+	if err := a.certificateMenu(); err != nil {
+		t.Fatal(err)
+	}
+
+	got := out.String()
+	for _, want := range []string{
+		"joker  ›  joker-one",
+		"fwq",
+		"khd",
+		"筛选证书",
+		"选择证书编号，f 筛选，0 返回",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("证书管理缺少 %q：\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"[根 CA]", "└─", "├─", "选择签发 CA", "当前签发机构", "s 切换签发 CA"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("证书管理不应再显示 %q：\n%s", unwanted, got)
+		}
+	}
+}
+
+func TestCertificateMenuDisplaysCertificatesUnderIssuerTree(t *testing.T) {
+	root := domain.Authority{ID: "ca-2073af77", Name: "测试"}
+	intermediate := domain.Authority{ID: "01-2eb5054f", Name: "测试-01", ParentID: root.ID}
+	other := domain.Authority{ID: "fca-02-498", Name: "FCA-02"}
+	otherInt := domain.Authority{ID: "fca-02-zj-01-7010d477", Name: "FCA-02-ZJ-01", ParentID: other.ID}
+	items := []domain.Authority{root, intermediate, other, otherInt}
+	var out bytes.Buffer
+	a := &App{
+		ui:          ui.New(strings.NewReader("0\n"), &out, false, nil),
+		repo:        currentCARepository{current: intermediate.ID, items: items},
+		authorities: authorityListService{items: items},
+		certificates: exportCertificateService{
+			items: []domain.Certificate{
+				{Serial: "1000", CommonName: "fwq", Profile: domain.Server, CAID: intermediate.ID},
+				{Serial: "1000", CommonName: "测试-01", Profile: domain.Intermediate, CAID: root.ID},
+				{Serial: "1000", CommonName: "OF-01-FWQ", Profile: domain.Client, CAID: otherInt.ID},
+			},
+		},
+	}
+	if err := a.certificateMenu(); err != nil {
+		t.Fatal(err)
+	}
+
+	got := out.String()
+	for _, want := range []string{
+		"测试  ›  测试-01",
+		"1", "fwq", "1000 · server",
+		"FCA-02  ›  FCA-02-ZJ-01",
+		"2", "OF-01-FWQ", "1000 · client",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("证书管理分组列表缺少 %q：\n%s", want, got)
+		}
+	}
+	if strings.Index(got, "测试  ›  测试-01") > strings.Index(got, "fwq") {
+		t.Fatalf("证书应列在签发路径下方：\n%s", got)
+	}
+	for _, unwanted := range []string{"[根 CA]", "intermediate-ca", "└─", "ca-2073af77"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("证书管理不应显示 %q：\n%s", unwanted, got)
+		}
+	}
+}
+
 func TestIssueMenuContainsSigningCASelection(t *testing.T) {
 	var out bytes.Buffer
 	a := &App{
@@ -444,7 +614,7 @@ func TestIssueMenuContainsSigningCASelection(t *testing.T) {
 			t.Fatalf("证书签发菜单缺少 %q：\n%s", want, got)
 		}
 	}
-	if !(strings.Index(got, "生成密钥并签发") < strings.Index(got, "导入 PEM CSR 签发") && strings.Index(got, "导入 PEM CSR 签发") < strings.LastIndex(got, "选择签发 CA")) {
+	if !(strings.Index(got, "选择签发 CA") < strings.Index(got, "生成密钥并签发") && strings.Index(got, "生成密钥并签发") < strings.Index(got, "导入 PEM CSR 签发")) {
 		t.Fatalf("证书签发菜单顺序不正确：\n%s", got)
 	}
 }
@@ -658,4 +828,16 @@ func TestChoicesAndPasswordRetryInPlace(t *testing.T) {
 			t.Fatalf("口令重试提示缺少 %q：\n%s", want, got)
 		}
 	}
+}
+
+func displayColumn(text string) int {
+	width := 0
+	for _, current := range text {
+		if current >= 0x2e80 {
+			width += 2
+		} else {
+			width++
+		}
+	}
+	return width
 }

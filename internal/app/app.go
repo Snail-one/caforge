@@ -260,33 +260,19 @@ func (a *App) showAuthorities() error {
 	for _, item := range items {
 		names[item.ID] = item.Name
 	}
-	children := make(map[string][]domain.Authority)
-	for _, item := range items {
-		if !item.IsRoot() {
-			children[item.ParentID] = append(children[item.ParentID], item)
-		}
-	}
 	displayed := make([]domain.Authority, 0, len(items))
-	rendered := make(map[string]bool, len(items))
-	for _, root := range items {
-		if !root.IsRoot() {
+	for _, node := range authorityTree(items) {
+		displayed = append(displayed, node.Authority)
+		key := strconv.Itoa(len(displayed))
+		if node.Child {
+			a.ui.MenuChildOptionStatusHint(key, node.Authority.Name, a.authorityBadges(node.Authority), node.Authority.ID+" · 到期 "+node.Authority.NotAfter.Local().Format("2006-01-02"), node.LastChild)
 			continue
 		}
-		displayed = append(displayed, root)
-		rendered[root.ID] = true
-		a.ui.MenuOptionStatusHint(strconv.Itoa(len(displayed)), root.Name, a.authorityBadges(root), root.ID+" · 自签名 · 到期 "+root.NotAfter.Local().Format("2006-01-02"))
-		for index, child := range children[root.ID] {
-			displayed = append(displayed, child)
-			rendered[child.ID] = true
-			a.ui.MenuChildOptionStatusHint(strconv.Itoa(len(displayed)), child.Name, a.authorityBadges(child), child.ID+" · 到期 "+child.NotAfter.Local().Format("2006-01-02"), index == len(children[root.ID])-1)
-		}
-	}
-	for _, item := range items {
-		if rendered[item.ID] {
+		if node.Orphan {
+			a.ui.MenuOptionStatusHint(key, node.Authority.Name, a.ui.LabelBadge("父 CA 缺失", false), node.Authority.ID+" · 父 CA "+node.Authority.ParentID)
 			continue
 		}
-		displayed = append(displayed, item)
-		a.ui.MenuOptionStatusHint(strconv.Itoa(len(displayed)), item.Name, a.ui.LabelBadge("父 CA 缺失", false), item.ID+" · 父 CA "+item.ParentID)
+		a.ui.MenuOptionStatusHint(key, node.Authority.Name, a.authorityBadges(node.Authority), node.Authority.ID+" · 自签名 · 到期 "+node.Authority.NotAfter.Local().Format("2006-01-02"))
 	}
 	a.ui.MenuExit("0/q", "返回")
 	a.ui.Printf("\n")
@@ -617,7 +603,11 @@ func (a *App) askYes(prompt string) (bool, error) {
 }
 
 func (a *App) selectAuthority() error {
-	a.ui.Header("主菜单 / 证书签发 / 选择签发 CA")
+	return a.selectSigningAuthority("主菜单 / 证书签发 / 选择签发 CA")
+}
+
+func (a *App) selectSigningAuthority(path string) error {
+	a.ui.Header(path)
 	id, e := a.chooseAuthority(false)
 	if e != nil || id == "" {
 		return e
@@ -628,6 +618,55 @@ func (a *App) selectAuthority() error {
 	}
 	return e
 }
+
+func (a *App) printCurrentIssuer(ca string) error {
+	meta, err := a.loadAuthority(ca)
+	if err != nil {
+		return err
+	}
+	a.ui.PrintInfoCard("当前签发机构",
+		ui.CardField{Label: "名称", Value: meta.Name},
+		ui.CardField{Label: "CA ID", Value: meta.ID},
+		ui.CardField{Label: "类型", Value: map[bool]string{true: "根 CA", false: "中间 CA"}[meta.IsRoot()]},
+	)
+	return nil
+}
+
+func (a *App) loadAuthority(id string) (domain.Authority, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return domain.Authority{}, errors.New("CA ID 为空")
+	}
+	var repoErr error
+	if a.repo != nil {
+		meta, err := a.repo.LoadAuthority(id)
+		if err == nil {
+			return meta, nil
+		}
+		repoErr = err
+	}
+	if a.authorities != nil {
+		meta, _, err := a.authorities.Get(id)
+		if err == nil {
+			return meta, nil
+		}
+		if repoErr == nil {
+			repoErr = err
+		}
+	}
+	if repoErr != nil {
+		return domain.Authority{}, repoErr
+	}
+	return domain.Authority{}, errors.New("未找到 CA " + id)
+}
+
+func (a *App) authorityDisplay(id string) string {
+	meta, err := a.loadAuthority(id)
+	if err != nil {
+		return id
+	}
+	return meta.Name + "（" + meta.ID + "）"
+}
 func (a *App) chooseAuthority(rootOnly bool) (string, error) {
 	items, e := a.authorities.List()
 	if e != nil {
@@ -637,22 +676,22 @@ func (a *App) chooseAuthority(rootOnly bool) (string, error) {
 	if !rootOnly && a.repo != nil {
 		current, _ = a.repo.CurrentCA()
 	}
-	intermediateCounts := make(map[string]int)
-	for _, item := range items {
-		if !item.IsRoot() {
-			intermediateCounts[item.ParentID]++
+	displayed := make([]domain.Authority, 0, len(items))
+	if rootOnly {
+		intermediateCounts := make(map[string]int)
+		for _, item := range items {
+			if !item.IsRoot() {
+				intermediateCounts[item.ParentID]++
+			}
 		}
-	}
-	filtered := make([]domain.Authority, 0, len(items))
-	for _, v := range items {
-		if !rootOnly || v.IsRoot() {
-			filtered = append(filtered, v)
+		for _, v := range items {
+			if !v.IsRoot() {
+				continue
+			}
+			displayed = append(displayed, v)
+			a.ui.MenuOptionHint(strconv.Itoa(len(displayed)), v.Name, fmt.Sprintf("%s · 已有 %d 个中间 CA", v.ID, intermediateCounts[v.ID]))
 		}
-	}
-	if len(filtered) == 0 {
-		return "", errors.New("没有可选 CA")
-	}
-	if !rootOnly {
+	} else {
 		currentName := "未选择"
 		for _, item := range items {
 			if item.ID == current {
@@ -665,15 +704,22 @@ func (a *App) chooseAuthority(rootOnly bool) (string, error) {
 			ui.CardField{Label: "CA ID", Value: emptyAs(current, "无")},
 		)
 		a.ui.Printf("\n")
-	}
-	for i, v := range filtered {
-		if rootOnly {
-			a.ui.MenuOptionHint(strconv.Itoa(i+1), v.Name, fmt.Sprintf("%s · 已有 %d 个中间 CA", v.ID, intermediateCounts[v.ID]))
-		} else if v.ID == current {
-			a.ui.MenuOptionStatusHint(strconv.Itoa(i+1), v.Name, a.ui.LabelBadge("当前", true), v.ID)
-		} else {
-			a.ui.MenuOptionHint(strconv.Itoa(i+1), v.Name, v.ID)
+		for _, node := range authorityTree(items) {
+			displayed = append(displayed, node.Authority)
+			key := strconv.Itoa(len(displayed))
+			status := ""
+			if node.Authority.ID == current {
+				status = a.ui.LabelBadge("当前", true)
+			}
+			if node.Child {
+				a.ui.MenuChildOptionStatusHint(key, node.Authority.Name, status, node.Authority.ID, node.LastChild)
+				continue
+			}
+			a.ui.MenuOptionStatusHint(key, node.Authority.Name, status, node.Authority.ID)
 		}
+	}
+	if len(displayed) == 0 {
+		return "", errors.New("没有可选 CA")
 	}
 	a.ui.MenuExit("0/q", "返回")
 	a.ui.Printf("\n")
@@ -681,11 +727,48 @@ func (a *App) chooseAuthority(rootOnly bool) (string, error) {
 	if rootOnly {
 		prompt = "选择根 CA 编号（作为中间 CA 的父级，0 返回）: "
 	}
-	n, e := a.askIndex(prompt, len(filtered))
+	n, e := a.askIndex(prompt, len(displayed))
 	if e != nil {
 		return "", e
 	}
-	return filtered[n-1].ID, nil
+	return displayed[n-1].ID, nil
+}
+
+type authorityTreeNode struct {
+	Authority domain.Authority
+	Child     bool
+	LastChild bool
+	Orphan    bool
+}
+
+func authorityTree(items []domain.Authority) []authorityTreeNode {
+	children := make(map[string][]domain.Authority)
+	for _, item := range items {
+		if !item.IsRoot() {
+			children[item.ParentID] = append(children[item.ParentID], item)
+		}
+	}
+	out := make([]authorityTreeNode, 0, len(items))
+	rendered := make(map[string]bool, len(items))
+	for _, root := range items {
+		if !root.IsRoot() {
+			continue
+		}
+		out = append(out, authorityTreeNode{Authority: root})
+		rendered[root.ID] = true
+		kids := children[root.ID]
+		for i, child := range kids {
+			out = append(out, authorityTreeNode{Authority: child, Child: true, LastChild: i == len(kids)-1})
+			rendered[child.ID] = true
+		}
+	}
+	for _, item := range items {
+		if rendered[item.ID] {
+			continue
+		}
+		out = append(out, authorityTreeNode{Authority: item, Orphan: true})
+	}
+	return out
 }
 
 func (a *App) issueMenu() error {
@@ -697,21 +780,13 @@ func (a *App) issueMenu() error {
 				ui.CardField{Label: "状态", Value: a.ui.LabelBadge("未选择", false)},
 				ui.CardField{Label: "下一步", Value: "先选择签发 CA，再生成或签署证书"},
 			)
-		} else {
-			meta, loadErr := a.repo.LoadAuthority(ca)
-			if loadErr != nil {
-				return loadErr
-			}
-			a.ui.PrintInfoCard("当前签发机构",
-				ui.CardField{Label: "名称", Value: meta.Name},
-				ui.CardField{Label: "CA ID", Value: ca},
-				ui.CardField{Label: "类型", Value: map[bool]string{true: "根 CA", false: "中间 CA"}[meta.IsRoot()]},
-			)
+		} else if e := a.printCurrentIssuer(ca); e != nil {
+			return e
 		}
 		a.ui.Printf("\n")
-		a.ui.MenuOptionHint("1", "生成密钥并签发", "创建私钥和终端证书")
-		a.ui.MenuOptionHint("2", "导入 PEM CSR 签发", "验证请求后仅签发证书")
-		a.ui.MenuOptionHint("3", "选择签发 CA", "决定后续证书由哪个根 CA 或中间 CA 签发")
+		a.ui.MenuOptionHint("1", "选择签发 CA", "决定后续证书由哪个根 CA 或中间 CA 签发")
+		a.ui.MenuOptionHint("2", "生成密钥并签发", "创建私钥和终端证书")
+		a.ui.MenuOptionHint("3", "导入 PEM CSR 签发", "验证请求后仅签发证书")
 		a.ui.MenuExit("0/q", "返回")
 		a.ui.Printf("\n")
 		v, e := a.ui.Ask("请选择: ")
@@ -720,17 +795,17 @@ func (a *App) issueMenu() error {
 		}
 		switch strings.ToLower(v) {
 		case "1":
+			e = a.selectAuthority()
+		case "2":
 			ca, e = a.requireCurrent()
 			if e == nil {
 				e = a.issueGenerated(ca)
 			}
-		case "2":
+		case "3":
 			ca, e = a.requireCurrent()
 			if e == nil {
 				e = a.issueCSR(ca)
 			}
-		case "3":
-			e = a.selectAuthority()
 		case "0", "q", "exit":
 			return nil
 		default:
@@ -875,40 +950,45 @@ func (a *App) issueCSR(ca string) error {
 }
 
 func (a *App) certificateMenu() error {
-	ca, e := a.requireCurrent()
-	if e != nil {
-		return e
-	}
 	filter := ""
 	for {
 		a.ui.Header("主菜单 / 证书管理")
-		items, e := a.certificates.List(ca)
+		authorities, e := a.authorities.List()
+		if e != nil {
+			return e
+		}
+		if len(authorities) == 0 {
+			a.ui.Warning("尚未创建 CA")
+			a.ui.Pause()
+			return nil
+		}
+		groups, items, e := a.certificateMenuGroups(authorities, filter)
 		if e != nil {
 			return e
 		}
 		if filter != "" {
-			var matched []domain.Certificate
-			needle := strings.ToLower(filter)
-			for _, c := range items {
-				if strings.Contains(strings.ToLower(c.Serial+" "+c.CommonName+" "+string(c.Profile)), needle) {
-					matched = append(matched, c)
-				}
-			}
-			items = matched
 			a.ui.PrintField("筛选", filter+"（输入 f 可修改）")
 			a.ui.Printf("\n")
 		}
 		if len(items) == 0 && filter == "" {
-			a.ui.Warning("当前 CA 尚未签发证书")
-			a.ui.Pause()
-			return nil
-		}
-		if len(items) == 0 {
+			a.ui.Warning("尚未签发终端证书")
+		} else if len(items) == 0 {
 			a.ui.Warning("没有匹配的证书")
 		}
-		for i, c := range items {
-			_, _, status, _ := a.certificates.Get(ca, c.Serial)
-			a.ui.MenuOptionStatusHint(strconv.Itoa(i+1), c.CommonName, a.ui.Badge(status), c.Serial+" · "+string(c.Profile))
+		index := 0
+		for i, group := range groups {
+			if i > 0 {
+				a.ui.Printf("\n")
+			}
+			a.ui.MenuGroup(group.title, "")
+			for _, cert := range group.certs {
+				index++
+				_, _, certStatus, _ := a.certificates.Get(cert.CAID, cert.Serial)
+				a.ui.MenuOptionStatusHint(strconv.Itoa(index), cert.CommonName, a.ui.Badge(certStatus), cert.Serial+" · "+string(cert.Profile))
+			}
+		}
+		if len(groups) > 0 {
+			a.ui.Printf("\n")
 		}
 		a.ui.MenuOptionHint("f", "筛选证书", "按序列号、通用名称或模板查找")
 		a.ui.MenuExit("0/q", "返回")
@@ -932,13 +1012,79 @@ func (a *App) certificateMenu() error {
 			a.ui.InvalidChoice()
 			continue
 		}
-		if e = a.certificateActions(ca, items[n-1].Serial); e != nil && !errors.Is(e, errCancelled) {
+		selected := items[n-1]
+		if e = a.certificateActions(selected.CAID, selected.Serial); e != nil && !errors.Is(e, errCancelled) {
 			a.ui.Error(e)
 			a.ui.Pause()
 		}
 		e = nil
 	}
 }
+
+type certificateMenuGroup struct {
+	title string
+	certs []domain.Certificate
+}
+
+func (a *App) certificateMenuGroups(authorities []domain.Authority, filter string) ([]certificateMenuGroup, []domain.Certificate, error) {
+	names := make(map[string]string, len(authorities))
+	for _, item := range authorities {
+		names[item.ID] = item.Name
+	}
+	var groups []certificateMenuGroup
+	var selectable []domain.Certificate
+	for _, node := range authorityTree(authorities) {
+		certs, err := a.leafCertificates(node.Authority.ID, filter)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(certs) == 0 {
+			continue
+		}
+		for i := range certs {
+			if certs[i].CAID == "" {
+				certs[i].CAID = node.Authority.ID
+			}
+		}
+		groups = append(groups, certificateMenuGroup{
+			title: authorityIssuerPath(node.Authority, names),
+			certs: certs,
+		})
+		selectable = append(selectable, certs...)
+	}
+	return groups, selectable, nil
+}
+
+func authorityIssuerPath(ca domain.Authority, names map[string]string) string {
+	if ca.IsRoot() {
+		return ca.Name
+	}
+	parent := names[ca.ParentID]
+	if strings.TrimSpace(parent) == "" {
+		parent = ca.ParentID
+	}
+	return parent + "  ›  " + ca.Name
+}
+
+func (a *App) leafCertificates(caID, filter string) ([]domain.Certificate, error) {
+	items, err := a.certificates.List(caID)
+	if err != nil {
+		return nil, err
+	}
+	needle := strings.ToLower(strings.TrimSpace(filter))
+	var out []domain.Certificate
+	for _, item := range items {
+		if item.Profile == domain.Intermediate {
+			continue
+		}
+		if needle != "" && !strings.Contains(strings.ToLower(item.Serial+" "+item.CommonName+" "+string(item.Profile)), needle) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
 func (a *App) certificateActions(ca, serial string) error {
 	for {
 		meta, cert, status, e := a.certificates.Get(ca, serial)
@@ -952,6 +1098,7 @@ func (a *App) certificateActions(ca, serial string) error {
 		a.ui.Header("主菜单 / 证书管理 / " + serial)
 		fields := []ui.CardField{
 			ui.CardField{Label: "状态", Value: a.ui.Badge(status)},
+			ui.CardField{Label: "签发 CA", Value: a.authorityDisplay(ca)},
 			ui.CardField{Label: "通用名称", Value: meta.CommonName},
 			ui.CardField{Label: "模板", Value: string(meta.Profile)},
 			ui.CardField{Label: "算法", Value: string(meta.Algorithm)},
